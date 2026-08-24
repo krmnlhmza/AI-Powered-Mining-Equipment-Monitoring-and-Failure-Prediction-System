@@ -8,7 +8,7 @@ Kurulduktan sonra Docker Desktop'ı Applications'dan aç ve tamamen başlamasın
 
 ## 2. Sanal ortam oluştur ve Python paketlerini kur
 ```bash
-cd ~/Desktop/digital_twin
+cd digital-twin        # depoyu klonladığınız klasörün içinden
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

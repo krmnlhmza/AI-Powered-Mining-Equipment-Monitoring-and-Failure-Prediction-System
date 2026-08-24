@@ -9,8 +9,8 @@ Maden iş makinelerinde anomali tespiti + arıza tahmini + RAG teknik asistan.
 ```bash
 # 0. Docker Desktop'ı aç (sağ üstte balina ikonu yeşil olmalı)
 
-# 1. Klasöre gir
-cd "/Users/muhammedhamzakaramanli/Desktop/adsız klasör/digital_twin-main"
+# 1. Klasöre gir (depoyu klonladığınız yer)
+cd digital-twin
 
 # 2. Altyapıyı kaldır (DB, Qdrant, Redis, MQTT, n8n, Grafana)
 docker compose up -d
