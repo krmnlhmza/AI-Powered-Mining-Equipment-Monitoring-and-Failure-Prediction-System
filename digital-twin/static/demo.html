@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ÇankaYazılım — Maden Ekipman İzleme Sistemi</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+/* ────────────────────────────────────────────────────────────
+   TASARIM DİLİ: Zemin siyah-gri-beyaz. Renk YALNIZ veride
+   (kırmızı/yeşil/sarı/mavi/turuncu). Simge/amblem yok, sade metin.
+   ──────────────────────────────────────────────────────────── */
+:root{
+  --bg:#0d0e10; --panel:#161719; --panel2:#1d1f22; --line:#2a2c30;
+  --text:#e8eaed; --mut:#9aa0a8; --mut2:#6b7077;
+  --red:#e5484d; --green:#46a758; --yellow:#f5d90a; --blue:#3b82f6; --orange:#f76b15;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+button{font-family:inherit;cursor:pointer}
+input,select{font-family:inherit}
+.view{display:none}
+.view.active{display:block}
+
+/* ── 1) AÇILIŞ ── */
+#view-splash{position:fixed;inset:0;background:var(--bg);display:none;
+  flex-direction:column;align-items:center;justify-content:center;gap:26px;z-index:100}
+#view-splash.active{display:flex}
+#view-splash img.logo-canka{max-height:200px;max-width:60vw}
+#view-splash .brand{font-size:3rem;font-weight:800;letter-spacing:1px}
+#view-splash .sub{font-size:0.95rem;color:var(--mut);letter-spacing:2px;text-transform:uppercase}
+#view-splash .enter{margin-top:10px;background:none;border:1px solid var(--line);color:var(--mut);
+  padding:10px 34px;border-radius:8px;font-size:0.9rem;transition:all .2s}
+#view-splash .enter:hover{border-color:var(--text);color:var(--text)}
+
+/* ── 2) GİRİŞ ── */
+#view-login{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;z-index:99}
+#view-login.active{display:flex}
+.login-card{width:340px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:34px}
+.login-card h2{font-size:1.05rem;font-weight:700;margin-bottom:22px;text-align:center;letter-spacing:0.5px}
+.login-card label{display:block;font-size:0.72rem;color:var(--mut);margin:12px 0 5px;text-transform:uppercase;letter-spacing:1px}
+.login-card input{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  padding:11px 12px;border-radius:8px;font-size:0.95rem;outline:none}
+.login-card input:focus{border-color:var(--mut)}
+.login-card .btn-login{width:100%;margin-top:22px;background:var(--text);color:var(--bg);border:none;
+  padding:12px;border-radius:8px;font-size:0.95rem;font-weight:700}
+
+/* ── Üst bar ── */
+header{display:none;background:var(--panel);border-bottom:1px solid var(--line);
+  padding:0 26px;height:56px;align-items:center;gap:18px}
+header.show{display:flex}
+header .brand{font-weight:800;font-size:1rem;white-space:nowrap}
+header .brand span{color:var(--mut);font-weight:400;font-size:0.8rem;margin-left:8px}
+.search-wrap{position:relative;flex:1;max-width:420px}
+.search-wrap input{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  padding:8px 14px;border-radius:8px;font-size:0.85rem;outline:none}
+.search-results{position:absolute;top:40px;left:0;right:0;background:var(--panel2);border:1px solid var(--line);
+  border-radius:8px;overflow:hidden;display:none;z-index:60}
+.search-results div{padding:9px 14px;font-size:0.83rem;cursor:pointer;border-bottom:1px solid var(--line)}
+.search-results div:last-child{border-bottom:none}
+.search-results div:hover{background:var(--panel)}
+.search-results .dis{color:var(--mut2);cursor:not-allowed}
+header .spacer{flex:1}
+.hbtn{background:none;border:1px solid var(--line);color:var(--mut);padding:7px 14px;border-radius:8px;
+  font-size:0.8rem;position:relative;white-space:nowrap}
+.hbtn:hover{color:var(--text);border-color:var(--mut)}
+.hbtn .cnt{position:absolute;top:-7px;right:-7px;background:var(--red);color:#fff;font-size:0.62rem;
+  font-weight:700;min-width:17px;height:17px;border-radius:99px;display:none;align-items:center;justify-content:center;padding:0 4px}
+.hbtn .cnt.show{display:flex}
+
+/* ── 3) SAHA SEÇİMİ ── */
+.container{max-width:1200px;margin:0 auto;padding:28px 26px}
+.page-title{font-size:0.78rem;color:var(--mut);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:16px}
+.mine-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.mine-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;transition:border-color .15s}
+.mine-card.on{cursor:pointer}
+.mine-card.on:hover{border-color:var(--mut)}
+.mine-card.off{opacity:0.38;cursor:not-allowed}
+.mine-card .m-id{font-size:0.7rem;color:var(--mut2);letter-spacing:1px}
+.mine-card .m-name{font-size:1.02rem;font-weight:700;margin:6px 0 3px}
+.mine-card .m-type{font-size:0.78rem;color:var(--mut)}
+.mine-card .m-foot{margin-top:14px;display:flex;justify-content:space-between;font-size:0.75rem;color:var(--mut)}
+.mine-card .m-live{color:var(--green);font-weight:600}
+.mine-card .m-off{color:var(--mut2)}
+.veh-list{margin-top:8px}
+.veh-row{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px;
+  display:flex;align-items:center;gap:16px;margin-bottom:10px}
+.veh-row.on{cursor:pointer}
+.veh-row.on:hover{border-color:var(--mut)}
+.veh-row.off{opacity:0.38;cursor:not-allowed}
+.veh-row .v-id{font-size:0.72rem;color:var(--mut2);width:110px;letter-spacing:0.5px}
+.veh-row .v-name{font-weight:700;flex:1}
+.veh-row .v-type{font-size:0.78rem;color:var(--mut);width:150px}
+.veh-row .v-st{font-size:0.75rem;font-weight:600}
+.veh-thumb{width:64px;height:40px;object-fit:cover;border-radius:6px;border:1px solid var(--line)}
+.back{background:none;border:none;color:var(--mut);font-size:0.82rem;padding:0;margin-bottom:14px}
+.back:hover{color:var(--text)}
+
+/* ── 4) ARAÇ PANOSU ── */
+.vh-head{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+.vh-head h2{font-size:1.25rem;font-weight:800}
+.vh-head .crumb{font-size:0.78rem;color:var(--mut)}
+.vh-head .right{margin-left:auto;display:flex;gap:8px}
+.vh-photo{width:86px;height:52px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.live-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+.lv{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.lv .l{font-size:0.68rem;color:var(--mut);text-transform:uppercase;letter-spacing:0.8px}
+.lv .v{font-size:1.45rem;font-weight:800;margin-top:4px}
+.lv .u{font-size:0.7rem;color:var(--mut2);font-weight:400}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:16px}
+.panel .p-title{font-size:0.72rem;color:var(--mut);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:14px;
+  display:flex;align-items:center;justify-content:space-between}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.mini{font-size:0.74rem;color:var(--mut)}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  padding:10px 18px;border-radius:8px;font-size:0.85rem;font-weight:600}
+.btn:hover{border-color:var(--mut)}
+.btn:disabled{opacity:0.5}
+.testnote{font-size:0.72rem;color:var(--mut2);margin-top:8px}
+/* Köşe bilgi rozeti (!) + hover balonu — Canlı Test kutusu */
+.info-dot{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:18px;height:18px;border-radius:50%;border:1px solid var(--mut2);color:var(--mut);
+  font-size:0.72rem;font-weight:700;font-style:normal;letter-spacing:0;cursor:help}
+.info-dot:hover{border-color:var(--text);color:var(--text)}
+.info-pop{position:absolute;top:26px;right:0;width:238px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:11px 13px;font-size:0.72rem;
+  font-weight:400;line-height:1.55;color:var(--mut);text-transform:none;letter-spacing:0;
+  box-shadow:0 10px 30px rgba(0,0,0,0.45);display:none;z-index:70}
+.info-dot:hover .info-pop,.info-dot:focus .info-pop{display:block}
+
+/* ── Fiziksel mod paneli (Senaryo 1) ── */
+.mode-panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin-bottom:16px}
+.mode-panel .mp-t{font-size:0.72rem;color:var(--mut);text-transform:uppercase;letter-spacing:1.2px;
+  margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.mode-panel .mp-active{color:var(--green);font-weight:700;letter-spacing:0;text-transform:none}
+.mode-btns{display:flex;flex-wrap:wrap;gap:7px}
+.mode-btn{background:var(--panel2);border:1px solid var(--line);color:var(--mut);
+  padding:7px 13px;border-radius:8px;font-size:0.78rem;transition:all .15s}
+.mode-btn:hover{color:var(--text);border-color:var(--mut)}
+.mode-btn.on{background:#17301c;border-color:var(--green);color:var(--green);font-weight:700}
+
+/* ── Senaryo butonları (Senaryo 2) ── */
+.scen-btns{display:flex;flex-direction:column;gap:8px}
+.scen-btn{text-align:left;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  padding:11px 14px;border-radius:8px;font-size:0.84rem;font-weight:600;transition:border-color .15s}
+.scen-btn:hover{border-color:var(--mut)}
+.scen-btn .sb-d{font-size:0.7rem;color:var(--mut);font-weight:400;margin-top:3px}
+.scen-btn:disabled{opacity:0.5}
+
+/* ── Veri bölümleri (Simülatör / Saha) ── */
+.sec-head{display:flex;align-items:center;gap:12px;cursor:pointer;user-select:none;
+  padding:12px 16px;background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:10px}
+.sec-head .sh-t{font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase}
+.sec-head .sh-badge{font-size:0.68rem;font-weight:700;padding:2px 10px;border-radius:99px}
+.sh-badge.on{background:#17301c;color:var(--green)}
+.sh-badge.off{background:#26282c;color:var(--mut2)}
+.sec-head .sh-arrow{margin-left:auto;color:var(--mut2);font-size:0.8rem;transition:transform .2s}
+.sec-head.closed .sh-arrow{transform:rotate(-90deg)}
+.sec-body.closed{display:none}
+.charts-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+.mini-chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.mini-chart .mc-t{font-size:0.66rem;color:var(--mut);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px}
+.mini-chart .mc-wrap{position:relative;height:120px}
+.saha-bos{background:var(--panel);border:1px dashed var(--line);border-radius:10px;
+  padding:26px;text-align:center;color:var(--mut2);font-size:0.8rem;margin-bottom:16px}
+
+/* ── 2B Dijital İkiz ── */
+.twin-wrap{position:relative}
+#twin-svg{width:100%;height:300px;display:block;background:var(--panel2);border-radius:8px;cursor:grab}
+#twin-svg:active{cursor:grabbing}
+.twin-ctl{position:absolute;right:10px;bottom:10px;display:flex;gap:6px}
+.twin-ctl button{width:32px;height:32px;border-radius:7px;border:1px solid var(--line);
+  background:var(--panel);color:var(--text);font-size:1rem;font-weight:700}
+.twin-lbl{transition:opacity .3s}
+#twin-svg[data-lod="uzak"] .twin-lbl{opacity:0}
+#twin-svg:hover .twin-lbl{opacity:1}
+.t-line{stroke:var(--line);stroke-width:2;fill:none}
+.t-lbl{font-size:11px;fill:var(--mut2);letter-spacing:0.5px}
+.t-val{font-size:14px;font-weight:800}
+@keyframes twinblink{0%,100%{opacity:1}50%{opacity:0.25}}
+.t-fault{animation:twinblink 1s infinite}
+@keyframes wspin{to{transform:rotate(360deg)}}
+.spokes{transform-box:fill-box;transform-origin:center;
+  animation:wspin var(--wdur,3s) linear infinite;animation-play-state:var(--wrun,running)}
+
+/* ── Çekmeceler (sağdan açılır) ── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;z-index:80}
+.overlay.show{display:block}
+.drawer{position:fixed;top:0;right:-460px;width:440px;max-width:92vw;height:100vh;background:var(--panel);
+  border-left:1px solid var(--line);z-index:90;transition:right .25s;display:flex;flex-direction:column}
+.drawer.show{right:0}
+.drawer .d-head{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px}
+.drawer .d-head b{font-size:0.95rem}
+.drawer .d-close{background:none;border:none;color:var(--mut);font-size:1.2rem}
+.drawer .d-body{flex:1;overflow-y:auto;padding:18px 22px}
+.alarm{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:var(--panel2)}
+.alarm .a-top{display:flex;justify-content:space-between;font-size:0.72rem;color:var(--mut);margin-bottom:5px}
+.alarm .a-desc{font-size:0.8rem;line-height:1.5}
+.alarm .a-score{font-weight:700}
+.kv{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);font-size:0.85rem;gap:12px}
+.kv span:first-child{color:var(--mut)}
+.kv:last-child{border-bottom:none}
+
+/* ── Servis Asistanı (chat) ── */
+.chat-msgs{flex:1;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:88%;padding:10px 14px;border-radius:10px;font-size:0.82rem;line-height:1.55}
+.msg.user{align-self:flex-end;background:var(--panel2);border:1px solid var(--line)}
+.msg.bot{align-self:flex-start;background:var(--bg);border:1px solid var(--line)}
+.msg.bot .src{font-size:0.68rem;color:var(--mut2);margin-top:6px}
+.chat-in{padding:14px 22px;border-top:1px solid var(--line);display:flex;gap:8px}
+.chat-in input{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  padding:10px 12px;border-radius:8px;font-size:0.85rem;outline:none}
+.chat-model{font-size:0.66rem;color:var(--mut2);text-align:center;padding:0 0 12px}
+</style>
+</head>
+<body>
+
+<!-- ═══ 1) AÇILIŞ (yalnız oturumda bir kez) ═══ -->
+<section id="view-splash" class="view">
+  <img class="logo-canka" src="/static/logo_canka.png" alt="" onerror="this.style.display='none'">
+  <div class="brand">ÇankaYazılım</div>
+  <div class="sub">Maden Ekipmanı İzleme ve Arıza Tahmin Sistemi</div>
+  <button class="enter" onclick="goLogin()">Sisteme Giriş</button>
+</section>
+
+<!-- ═══ 2) GİRİŞ ═══ -->
+<section id="view-login" class="view">
+  <div class="login-card">
+    <h2>Maden Ekipman İzleme Sistemi</h2>
+    <label>Kullanıcı ID</label>
+    <input id="login-user" type="text" autocomplete="off">
+    <label>Parola</label>
+    <input id="login-pass" type="password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn-login" onclick="doLogin()">Giriş</button>
+  </div>
+</section>
+
+<!-- ═══ Üst bar ═══ -->
+<header id="topbar">
+  <div class="brand">ÇankaYazılım<span>Maden Ekipman İzleme</span></div>
+  <div class="search-wrap">
+    <input id="search" placeholder="Araç ID veya Maden ID ara…" autocomplete="off" oninput="doSearch()">
+    <div class="search-results" id="search-results"></div>
+  </div>
+  <div class="spacer"></div>
+  <button class="hbtn" onclick="openDrawer('alarms')">Uyarılar<span class="cnt" id="alarm-cnt"></span></button>
+  <button class="hbtn" onclick="openDrawer('report')">Rapor</button>
+  <button class="hbtn" onclick="openDrawer('notif')">Bildirimler</button>
+  <button class="hbtn" onclick="openDrawer('chat')">Servis Asistanı</button>
+</header>
+
+<!-- ═══ 3) SAHA SEÇİMİ ═══ -->
+<section id="view-sites" class="view">
+  <div class="container">
+    <div class="page-title">Sahalar</div>
+    <div class="mine-grid" id="mine-grid"></div>
+    <div id="veh-section" style="display:none">
+      <div style="height:26px"></div>
+      <button class="back" onclick="backToMines()">← Sahalar</button>
+      <div class="page-title" id="veh-title">Araçlar</div>
+      <div class="veh-list" id="veh-list"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 4) ARAÇ PANOSU ═══ -->
+<section id="view-vehicle" class="view">
+  <div class="container">
+    <button class="back" onclick="backToVehicles()">← Araç listesi</button>
+    <div class="vh-head">
+      <img class="vh-photo" id="vh-photo" src="" alt="" onerror="this.style.display='none'">
+      <h2 id="vh-name">—</h2>
+      <span class="crumb" id="vh-crumb">—</span>
+      <div class="right">
+        <button class="btn" onclick="openDrawer('detail')">Detay</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="p-title"><span>2B Dijital İkiz</span><span class="mini" id="twin-status"></span></div>
+      <div class="twin-wrap">
+        <svg id="twin-svg" viewBox="0 0 900 320" data-lod="uzak"><g id="twin-world"></g></svg>
+        <div class="twin-ctl">
+          <button onclick="twinZoom(1.4)">+</button>
+          <button onclick="twinZoom(0.71)">−</button>
+          <button onclick="twinReset()" style="width:auto;padding:0 10px;font-size:0.72rem">Sıfırla</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═ Dijital İkiz Simülatörü verileri ═ -->
+    <div class="sec-head" onclick="toggleSec('sim')">
+      <span class="sh-t">Dijital İkiz Simülatörü</span>
+      <span class="sh-badge on" id="sim-mqtt">MQTT aktif</span>
+      <select id="chart-window" onclick="event.stopPropagation()" onchange="simChartsReset()"
+        style="background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:4px 8px;border-radius:6px;font-size:0.72rem">
+        <option value="1">Son 1 dk</option>
+        <option value="3" selected>Son 3 dk</option>
+        <option value="10">Son 10 dk</option>
+        <option value="30">Son 30 dk</option>
+      </select>
+      <span class="sh-arrow">▼</span>
+    </div>
+    <div class="sec-body" id="sec-sim">
+      <div class="live-grid" id="live-grid"></div>
+      <div class="charts-grid" id="charts-grid"></div>
+    </div>
+
+    <!-- ═ Saha aracı verileri (bağlantı yok — boş) ═ -->
+    <div class="sec-head closed" onclick="toggleSec('saha')">
+      <span class="sh-t">Saha Aracı</span>
+      <span class="sh-badge off">MQTT pasif</span>
+      <span class="sh-arrow">▼</span>
+    </div>
+    <div class="sec-body closed" id="sec-saha">
+      <div class="live-grid" id="saha-grid"></div>
+      <div class="saha-bos">Saha bağlantısı pasif.</div>
+    </div>
+
+    <div class="row2">
+      <div class="panel" style="margin-bottom:0">
+        <div class="p-title"><span>Kalan Faydalı Ömür Tahmini (RUL · LSTM)</span></div>
+        <div id="rul-box" class="mini">Sistem normal — aktif arıza tahmini yok.</div>
+      </div>
+      <div class="panel" style="margin-bottom:0">
+        <div class="p-title"><span>Canlı Test</span>
+          <span class="info-dot" tabindex="0">!<span class="info-pop" id="test-info-pop">Canlı test, dijital ikizin (simülatörün) kendiliğinden anormal değer üretmesini beklemeden, sistemin arıza anındaki tepkisini — tespit, kalan ömür tahmini ve teknik asistan — kontrollü biçimde görmek içindir. (Yalnız demo amaçlıdır.)</span></span>
+        </div>
+        <button class="btn" id="ariza-btn" style="width:100%;margin-top:2px" onclick="arizaEnjekte()">Testi Başlat</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Çekmeceler ═══ -->
+<div class="overlay" id="overlay" onclick="closeDrawers()"></div>
+
+<aside class="drawer" id="drawer-alarms">
+  <div class="d-head"><b>Uyarılar</b>
+    <select id="alarm-filter" onchange="loadAlarms()"
+      style="background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:4px 8px;border-radius:6px;font-size:0.75rem">
+      <option value="">Tüm araçlar</option>
+      <option>LH517i_001</option><option>LH517i_002</option><option>TH551i_001</option>
+    </select>
+    <button class="d-close" onclick="closeDrawers()">×</button></div>
+  <div class="d-body" id="alarms-body"></div>
+</aside>
+
+<aside class="drawer" id="drawer-report">
+  <div class="d-head"><b>Rapor</b><button class="d-close" onclick="closeDrawers()">×</button></div>
+  <div class="d-body">
+    <div class="kv"><span>Kapsam</span><span>Son 24 saat</span></div>
+    <div class="kv"><span>İçerik</span><span>Özet + anomaliler + LSTM + RAG</span></div>
+    <div style="margin-top:18px">
+      <button class="btn" id="rapor-btn" onclick="raporOlustur()">Rapor Oluştur ve E-posta Gönder</button>
+    </div>
+    <div class="mini" id="rapor-durum" style="margin-top:10px"></div>
+  </div>
+</aside>
+
+<aside class="drawer" id="drawer-notif">
+  <div class="d-head"><b>Bildirimler</b><button class="d-close" onclick="closeDrawers()">×</button></div>
+  <div class="d-body">
+    <div class="kv"><span>Bildirim altyapısı</span><span>Otomatik (backend + n8n)</span></div>
+    <div class="kv"><span>Tetik koşulu</span><span>Anomali skoru ≥ 0.7</span></div>
+    <div class="kv"><span>Sistem logu</span><span style="color:var(--green)">Aktif</span></div>
+    <div class="kv"><span>PDF rapor</span><span style="color:var(--green)">Aktif</span></div>
+    <div class="kv"><span>E-posta</span><span style="color:var(--green)">Aktif</span></div>
+    <div class="kv"><span>LH517i #1 alıcısı</span><span>bakim@maden.example</span></div>
+    <div class="kv"><span>LH517i #2 alıcısı</span><span>vardiya.sefi@maden.example</span></div>
+    <div class="kv"><span>TH551i #1</span><span style="color:var(--mut2)">E-posta tanımsız</span></div>
+  </div>
+</aside>
+
+<aside class="drawer" id="drawer-detail">
+  <div class="d-head"><b>Detay</b><button class="d-close" onclick="closeDrawers()">×</button></div>
+  <div class="d-body" id="detail-body"></div>
+</aside>
+
+<aside class="drawer" id="drawer-chat">
+  <div class="d-head"><b>Servis Asistanı</b><button class="d-close" onclick="closeDrawers()">×</button></div>
+  <div class="chat-msgs" id="chat-msgs">
+    <div class="msg bot">Merhaba. Ekipman servis dokümantasyonunda arama yapabilirim.
+      Örnek: “Alternatör arızasının çözümü nedir?”</div>
+  </div>
+  <div class="chat-in">
+    <input id="chat-q" placeholder="Sorunuzu yazın…" onkeydown="if(event.key==='Enter')sendChat()">
+    <button class="btn" onclick="sendChat()">Gönder</button>
+  </div>
+  <div class="chat-model" id="chat-model"></div>
+</aside>
+
+<script>
+const API = '';
+
+/* Erişilebilir tek saha + gerçek 3 simülatör aracı; diğerleri "kayıtlı ama
+   bu hesapla erişilemez" örnekleridir (soluk, tıklanamaz). */
+const MINES = [
+  {id:'MDN-001', ad:'Karadağ Yeraltı Ocağı',  tip:'Yeraltı — Krom',   erisim:true},
+  {id:'MDN-002', ad:'Akçatepe Açık Ocağı',    tip:'Açık — Bakır',     erisim:false, arac:7},
+  {id:'MDN-003', ad:'Gümüşköy Yeraltı Ocağı', tip:'Yeraltı — Gümüş',  erisim:false, arac:5},
+  {id:'MDN-004', ad:'Sarıdere Ocağı',         tip:'Yeraltı — Krom',   erisim:false, arac:4},
+];
+const VEHICLES = [
+  {id:'LH517i_001', ad:'Sandvik LH517i #1', tip:'LHD Yükleyici',    mine:'MDN-001', erisim:true},
+  {id:'LH517i_002', ad:'Sandvik LH517i #2', tip:'LHD Yükleyici',    mine:'MDN-001', erisim:true},
+  {id:'TH551i_001', ad:'Sandvik TH551i #1', tip:'Yer Altı Kamyonu', mine:'MDN-001', erisim:true},
+  {id:'TH551i_002', ad:'Sandvik TH551i #2', tip:'Yer Altı Kamyonu', mine:'MDN-001', erisim:false},
+  {id:'DD422i_001', ad:'Sandvik DD422i #1', tip:'Jumbo Delici',     mine:'MDN-001', erisim:false},
+];
+const SENSORS = [
+  {key:'temperature', ad:'Yağ Sıcaklığı', birim:'°C',   renk:'var(--red)'},
+  {key:'vibration',   ad:'Titreşim',      birim:'mm/s', renk:'var(--orange)'},
+  {key:'pressure',    ad:'Basınç',        birim:'bar',  renk:'var(--blue)'},
+  {key:'current',     ad:'Akım',          birim:'A',    renk:'var(--yellow)'},
+  {key:'speed',       ad:'Hız',           birim:'km/h', renk:'var(--green)'},
+  {key:'rpm',         ad:'Devir',         birim:'d/dk', renk:'var(--blue)'},
+  {key:'torque',      ad:'Tork',          birim:'Nm',   renk:'var(--orange)'},
+  {key:'fuel',        ad:'Yakıt Tüketimi',birim:'L/sa', renk:'var(--yellow)'},
+];
+
+let state = {mine:null, vehicle:null};
+let timers = [];
+
+/* ── Görünüm yönetimi ── */
+function show(id){
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.getElementById('topbar').classList.toggle('show',
+    id==='view-sites' || id==='view-vehicle');
+  timers.forEach(clearInterval); timers=[];
+}
+function goLogin(){ show('view-login'); document.getElementById('login-user').focus(); }
+function doLogin(){
+  /* Demo doğrulaması: boş olmayan her kimlik kabul edilir */
+  const u=document.getElementById('login-user').value.trim();
+  const p=document.getElementById('login-pass').value.trim();
+  if(!u||!p) return;
+  sessionStorage.setItem('girildi','1');
+  renderMines(); show('view-sites'); pollAlarmCount();
+}
+
+/* ── 3) Sahalar & araçlar ── */
+function renderMines(){
+  document.getElementById('veh-section').style.display='none';
+  document.getElementById('mine-grid').style.display='grid';
+  const g=document.getElementById('mine-grid');
+  g.innerHTML = MINES.map(m=>{
+    const n = m.erisim ? VEHICLES.filter(v=>v.mine===m.id).length : m.arac;
+    return `<div class="mine-card ${m.erisim?'on':'off'}" ${m.erisim?`onclick="selectMine('${m.id}')"`:''}>
+      <div class="m-id">${m.id}</div>
+      <div class="m-name">${m.ad}</div>
+      <div class="m-type">${m.tip}</div>
+      <div class="m-foot"><span>${n} araç</span>
+        <span class="${m.erisim?'m-live':'m-off'}">${m.erisim?'Bağlı':'Erişim yok'}</span></div>
+    </div>`;
+  }).join('');
+}
+function selectMine(id){
+  state.mine = MINES.find(m=>m.id===id);
+  document.getElementById('mine-grid').style.display='none';
+  const vs=document.getElementById('veh-section'); vs.style.display='block';
+  document.getElementById('veh-title').textContent = `${state.mine.ad} — Araçlar`;
+  document.getElementById('veh-list').innerHTML = VEHICLES.filter(v=>v.mine===id).map(v=>`
+    <div class="veh-row ${v.erisim?'on':'off'}" ${v.erisim?`onclick="selectVehicle('${v.id}')"`:''}>
+      <img class="veh-thumb" src="/static/foto_${v.id.startsWith('TH')?'th551':'lh517'}.jpg" alt="" onerror="this.style.display='none'">
+      <span class="v-id">${v.id}</span>
+      <span class="v-name">${v.ad}</span>
+      <span class="v-type">${v.tip}</span>
+      <span class="v-st" style="color:${v.erisim?'var(--green)':'var(--mut2)'}">${v.erisim?'Canlı':'Erişim yok'}</span>
+    </div>`).join('');
+}
+function backToMines(){ renderMines(); }
+function backToVehicles(){ show('view-sites'); selectMine(state.mine.id); pollAlarmCount(); }
+
+/* ── 4) Araç panosu ── */
+function selectVehicle(id){
+  state.vehicle = VEHICLES.find(v=>v.id===id);
+  if(!state.mine) state.mine = MINES.find(m=>m.id===state.vehicle.mine);
+  show('view-vehicle');
+  document.getElementById('vh-name').textContent = state.vehicle.ad;
+  const vp=document.getElementById('vh-photo');
+  vp.style.display=''; vp.src=`/static/foto_${state.vehicle.id.startsWith('TH')?'th551':'lh517'}.jpg`;
+  document.getElementById('vh-crumb').textContent =
+    `${state.mine.ad} · ${state.vehicle.id} · ${state.vehicle.tip}`;
+  window._prevAnom = false; _rulSon = 0;
+  document.getElementById('rul-box').innerHTML = 'Sistem normal — aktif arıza tahmini yok.';
+  window._testActive=false; window._testSeen=false;
+  /* Canlı Test sırası GLOBAL: araç değişince sıfırlanmaz, kaldığı yerden devam eder */
+  buildLiveGrid(); buildSahaGrid(); twinBuild(); simChartsReset(); simMqttBadge();
+  refreshLive();
+  timers.push(setInterval(refreshLive, 2500));
+  timers.push(setInterval(simChartsUpdate, 3000));
+  timers.push(setInterval(simMqttBadge, 15000));
+  pollAlarmCount();
+}
+
+function buildLiveGrid(){
+  document.getElementById('live-grid').innerHTML = SENSORS.map(s=>`
+    <div class="lv"><div class="l">${s.ad}</div>
+      <div class="v" style="color:${s.renk}"><span id="lv-${s.key}">—</span> <span class="u">${s.birim}</span></div>
+    </div>`).join('');
+}
+function buildSahaGrid(){
+  /* Saha aracı kartları: bağlantı yok — tüm değerler boş */
+  document.getElementById('saha-grid').innerHTML = SENSORS.map(s=>`
+    <div class="lv"><div class="l">${s.ad}</div>
+      <div class="v" style="color:var(--mut2)">— <span class="u">${s.birim}</span></div>
+    </div>`).join('');
+}
+
+async function refreshLive(){
+  try{
+    const r = await fetch(`${API}/sensors/latest/${state.vehicle.id}`);
+    const d = await r.json();
+    if(!d.temperature) return;
+    SENSORS.forEach(s=>{
+      const el=document.getElementById(`lv-${s.key}`);
+      if(el && d[s.key]!==null && d[s.key]!==undefined)
+        el.textContent = Number(d[s.key]).toFixed(s.key==='rpm'?0:s.key==='vibration'?2:1);
+    });
+    twinUpdate(d);
+    /* Anomali başladığı an arıza tahmini bildirimi (zincir: tespit → tahmin) */
+    if(d.is_anomaly){
+      if(!window._prevAnom){
+        /* Anomali doğrulandı → LSTM'e "analiz" süresi (yapay/anlık durmasın) */
+        document.getElementById('rul-box').innerHTML =
+          '<div class="mini">Anomali doğrulandı. LSTM, son 20 okumanın zaman serisini değerlendiriyor…</div>';
+        _rulSon = Date.now();
+        setTimeout(()=>{ _rulSon = 0; rulNotify(); }, 4000);
+        pollAlarmCount();
+      } else {
+        rulNotify();
+      }
+    }
+    window._prevAnom = d.is_anomaly;
+    /* Canlı Test bitişi: anomali görülüp temizlendiğinde butonu tekrar aç */
+    if(window._testActive){
+      if(d.is_anomaly) window._testSeen=true;
+      else if(window._testSeen){
+        const b=document.getElementById('ariza-btn'); if(b) b.disabled=false;
+        window._testActive=false; window._testSeen=false;
+      }
+    }
+  }catch(e){}
+}
+
+/* ── Simülatör çalışma koşulu (Senaryo 1) — Detay çekmecesinde açılır liste ──
+   Araca özel: seçilen fiziksel koşul yalnız bu aracı etkiler, simülatör o
+   koşulda sabit gerçekçi veri üretir (döngü ilerlemez). "Otomatik döngü" =
+   makine kendi operasyon döngüsünde gezer. */
+async function scenarioSelectHtml(){
+  try{
+    const r=await fetch(`${API}/sensors/mode/${state.vehicle.id}`);
+    const d=await r.json();
+    if(!d.fazlar) return '';
+    const sel=k=>d.aktif===k?'selected':'';
+    const opts = `<option value="auto" ${sel('auto')}>Otomatik döngü (operasyon)</option>`
+      + d.fazlar.map(f=>`<option value="${f.kod}" ${sel(f.kod)}>${f.ad}</option>`).join('');
+    return `<select id="scenario-select" onchange="setScenario(this.value)"
+      style="width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+      padding:9px 10px;border-radius:8px;font-size:0.85rem;outline:none;margin-top:6px">${opts}</select>`;
+  }catch(e){ return ''; }
+}
+async function setScenario(faz){
+  const s=document.getElementById('scenario-durum');
+  if(s) s.textContent='Koşul değiştiriliyor…';
+  try{
+    const r=await fetch(`${API}/sensors/mode/${state.vehicle.id}?faz=${faz}`,{method:'POST'});
+    const d=await r.json();
+    if(d.hata){ if(s) s.textContent='Koşul değiştirilemedi.'; return; }
+    if(s) s.textContent = `Aktif koşul: ${d.ad} — simülatör bu koşulda veri üretiyor.`;
+  }catch(e){ if(s) s.textContent='Bağlantı hatası.'; }
+}
+
+/* ── Çoklu mini grafik: her sensöre ayrı tablo (korelasyon anlatımı) ── */
+const CHART_DEFS = [
+  {key:'temperature',   ad:'Yağ Sıcaklığı (°C)', renk:'#e5484d'},
+  {key:'vibration',     ad:'Titreşim (mm/s)',    renk:'#f76b15'},
+  {key:'pressure',      ad:'Basınç (bar)',       renk:'#3b82f6'},
+  {key:'current',       ad:'Akım (A)',           renk:'#f5d90a'},
+  {key:'speed',         ad:'Hız (km/h)',         renk:'#46a758'},
+  {key:'rpm',           ad:'Devir (d/dk)',       renk:'#3b82f6'},
+  {key:'torque',        ad:'Tork (Nm)',          renk:'#f76b15'},
+  {key:'fuel',          ad:'Yakıt (L/sa)',       renk:'#f5d90a'},
+  {key:'anomaly_score', ad:'Anomali Skoru',      renk:'#e8eaed'},
+];
+let charts = {};
+
+function toggleSec(name){
+  document.querySelector(`#sec-${name}`).classList.toggle('closed');
+  document.querySelector(`#sec-${name}`).previousElementSibling.classList.toggle('closed');
+}
+
+function simChartsReset(){
+  Object.values(charts).forEach(c=>c.destroy()); charts={};
+  const g=document.getElementById('charts-grid');
+  g.innerHTML = CHART_DEFS.map(c=>`
+    <div class="mini-chart"><div class="mc-t" style="color:${c.renk}">${c.ad}</div>
+      <div class="mc-wrap"><canvas id="mc-${c.key}"></canvas></div></div>`).join('');
+  CHART_DEFS.forEach(cd=>{
+    const ctx=document.getElementById(`mc-${cd.key}`).getContext('2d');
+    charts[cd.key]=new Chart(ctx,{type:'line',
+      data:{labels:[],datasets:[{data:[],borderColor:cd.renk,borderWidth:1.4,
+        pointRadius:[],pointBackgroundColor:[],pointBorderColor:[],tension:0.3,fill:false}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{ticks:{color:'#6b7077',maxTicksLimit:4,font:{size:9}},grid:{color:'#1d1f22'}},
+          y:{ticks:{color:'#9aa0a8',font:{size:9},maxTicksLimit:5},grid:{color:'#1d1f22'}}
+        }}});
+  });
+  simChartsUpdate();
+}
+
+async function simChartsUpdate(){
+  if(!state.vehicle) return;
+  const mins=document.getElementById('chart-window').value;
+  for(const cd of CHART_DEFS){
+    const ch=charts[cd.key]; if(!ch) continue;
+    try{
+      const r=await fetch(`${API}/dashboard/timeseries/${state.vehicle.id}/${cd.key}?minutes=${mins}`);
+      const d=await r.json();
+      if(!d.values||!d.values.length) continue;
+      ch.data.labels=d.labels.map(t=>t.slice(11,16));
+      ch.data.datasets[0].data=d.values;
+      /* Anomali anları kırmızı nokta olarak işaretlenir */
+      ch.data.datasets[0].pointRadius = d.anomalies.map(a=>a?3:0);
+      ch.data.datasets[0].pointBackgroundColor = d.anomalies.map(a=>a?'#e5484d':'transparent');
+      ch.data.datasets[0].pointBorderColor = ch.data.datasets[0].pointBackgroundColor;
+      const mn=Math.min(...d.values), mx=Math.max(...d.values), pad=Math.max((mx-mn)*0.15,0.4);
+      ch.options.scales.y.suggestedMin=mn-pad;
+      ch.options.scales.y.suggestedMax=mx+pad;
+      ch.update();
+    }catch(e){}
+  }
+}
+
+async function simMqttBadge(){
+  try{
+    const r=await fetch(`${API}/dashboard/mqtt-status`); const d=await r.json();
+    const b=document.getElementById('sim-mqtt');
+    if(d.baglanti==='aktif'){ b.textContent='MQTT aktif'; b.className='sh-badge on'; }
+    else { b.textContent='MQTT pasif'; b.className='sh-badge off'; }
+  }catch(e){}
+}
+
+/* ── Arıza Tahmini bildirimi: YALNIZ anomali tespitine bağlı ── */
+let _rulSon = 0;
+async function rulNotify(){
+  if(Date.now() - _rulSon < 6000) return;   /* anomali sürerken periyodik tazele */
+  _rulSon = Date.now();
+  try{
+    const r=await fetch(`${API}/predict/rul/${state.vehicle.id}`);
+    const d=await r.json();
+    if(!d.rul_saat && d.rul_saat!==0) return;
+    const ts = new Date().toLocaleTimeString('tr-TR');
+    const box=document.getElementById('rul-box');
+    const renk = d.renk==='kirmizi'?'var(--red)':d.renk==='sari'?'var(--yellow)':'var(--green)';
+    const arac = state.vehicle ? state.vehicle.ad : d.equipment_id;
+    box.innerHTML = `<div style="font-size:0.86rem;line-height:1.75">
+      <div style="font-weight:700;color:${renk};letter-spacing:0.3px;margin-bottom:8px">
+        ${d.durum} · ${d.ariza||'Arıza gelişimi'}</div>
+      <div><span style="color:var(--mut)">Etkilenen sistem:</span> ${d.sistem||d.baskin_sensor} — ${arac}</div>
+      <div><span style="color:var(--mut)">Tahmini kalan faydalı ömür (RUL):</span> <b>~${Math.round(d.rul_saat)} saat</b></div>
+      <div style="margin-top:4px"><span style="color:var(--mut)">Gerekçe:</span> ${d.gerekce||''}</div>
+      <div style="margin-top:6px;color:var(--text)">${d.oneri||''}</div>
+      <div style="margin-top:8px;font-size:0.72rem;color:var(--mut2)">Tespit zamanı: ${ts}</div>
+    </div>`;
+  }catch(e){}
+}
+
+/* ── Canlı Test (Senaryo 2): tek buton — sıralı çok-sensörlü arıza enjeksiyonu ──
+   Not: Dijital ikizin arıza üretmesi normalde beklenemez; bu buton, demo için
+   arızayı kontrollü biçimde tetikler. Her basış sıradaki arızayı verir; ardından
+   IF yakalar → LSTM kalan ömrü tahmin eder → Uyarı/Rapor → Servis Asistanı. */
+const ARIZALAR = [
+  {kod:'yag_pompasi', ad:'Yağ / Hidrolik Pompa Arızası', imza:'basınç düşer, titreşim artar, yağ ısısı düşer, yakıt artar'},
+  {kod:'rulman',      ad:'Rulman Arızası',                imza:'titreşim çok yükselir, sıcaklık hafif artar'},
+  {kod:'overheat',    ad:'Motor Aşırı Isınması',          imza:'yağ sıcaklığı kritik eşiğe çıkar, akım artar'},
+  {kod:'enjektor',    ad:'Enjektör / Yanma Arızası',      imza:'titreşim (misfire) ve yakıt artar, tork düşer'},
+  {kod:'overcurrent', ad:'Aşırı Akım (Motor Sargı)',      imza:'sürücü motor akımı çok yükselir, sargı ısınır'},
+  {kod:'fren',        ad:'Fren Aşırı Isınması',           imza:'fren sıcaklığı yükselir, hız düşer, titreşim artar'},
+  {kod:'transmisyon', ad:'Transmisyon Arızası',           imza:'şanzıman titreşimi ve yağ sıcaklığı artar'},
+  {kod:'sogutma',     ad:'Soğutma Sistemi Arızası',       imza:'radyatör/fan yetersiz, motor sıcaklığı sürekli yükselir'},
+];
+let _arizaIdx = 0;   /* GLOBAL sıra: araçlar arası sıfırlanmaz. "!" balonu sabittir. */
+async function arizaEnjekte(){
+  const btn=document.getElementById('ariza-btn');
+  const a=ARIZALAR[_arizaIdx];
+  btn.disabled=true;                       // test sürerken kilitli
+  window._testActive=true; window._testSeen=false;
+  try{
+    await fetch(`${API}/sensors/simulate/${state.vehicle.id}?force_anomaly=true&ariza_tipi=${a.kod}`,{method:'POST'});
+  }catch(e){ btn.disabled=false; window._testActive=false; return; }
+  _arizaIdx = (_arizaIdx + 1) % ARIZALAR.length;
+  // Güvenlik ağı: anomali temizlenmese bile en geç 22 sn sonra buton açılır
+  setTimeout(()=>{ if(window._testActive){ btn.disabled=false; window._testActive=false; } }, 22000);
+}
+
+/* ── 2B Dijital İkiz motoru ──
+   Sandvik teknik çizimlerine (yan görünüş) benzetilmiş 2B şema.
+   Tekerlekler canlı hıza göre döner; sürükleyerek gezdirme + imlece zoom;
+   hover ile bileşen etiketleri açılır. Arızalı bileşen kırmızı işaretlenir. */
+let twinScale=1, twinX=0, twinY=0;
+const LIMITS={
+  loader:{temperature:88, vibration:4.5, pressure:280, current:195},
+  truck: {temperature:92, vibration:5.0, pressure:250, current:220},
+};
+
+function wheel(cx,cy,r){
+  return `<g>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="#151719" stroke="#3a3d42" stroke-width="5"/>
+    <circle cx="${cx}" cy="${cy}" r="${r*0.62}" fill="#1d1f22" stroke="#4a4e55" stroke-width="3"/>
+    <g class="spokes">
+      <circle cx="${cx}" cy="${cy}" r="${r*0.2}" fill="#33363b"/>
+      <line x1="${cx-r*0.55}" y1="${cy}" x2="${cx+r*0.55}" y2="${cy}" stroke="#4a4e55" stroke-width="4"/>
+      <line x1="${cx}" y1="${cy-r*0.55}" x2="${cx}" y2="${cy+r*0.55}" stroke="#4a4e55" stroke-width="4"/>
+      <line x1="${cx-r*0.39}" y1="${cy-r*0.39}" x2="${cx+r*0.39}" y2="${cy+r*0.39}" stroke="#4a4e55" stroke-width="3"/>
+      <line x1="${cx-r*0.39}" y1="${cy+r*0.39}" x2="${cx+r*0.39}" y2="${cy-r*0.39}" stroke="#4a4e55" stroke-width="3"/>
+    </g>
+    <circle cx="${cx}" cy="${cy}" r="${r*0.09}" fill="#6b7077"/>
+  </g>`;
+}
+
+/* LH517i — mafsallı yükleyici, sağa bakar */
+function drawLoader(){
+  const O='#e8582a', Od='#c24312';
+  return `
+  <line x1="30" y1="272" x2="870" y2="272" stroke="#2a2c30" stroke-width="2"/>
+  <path id="tw-eng" d="M118 208 L118 158 L150 140 L268 140 L282 158 L282 208 Z"
+        fill="${O}" stroke="${Od}" stroke-width="3"/>
+  <rect x="132" y="150" width="58" height="34" rx="3" fill="#1d1f22" stroke="#33363b"/>
+  <line x1="138" y1="156" x2="184" y2="156" stroke="#3a3d42" stroke-width="2"/>
+  <line x1="138" y1="164" x2="184" y2="164" stroke="#3a3d42" stroke-width="2"/>
+  <line x1="138" y1="172" x2="184" y2="172" stroke="#3a3d42" stroke-width="2"/>
+  <rect x="200" y="118" width="12" height="26" rx="2" fill="#33363b"/>
+  <rect x="240" y="146" width="34" height="24" rx="3" fill="#1d1f22" stroke="#33363b"/>
+  <path d="M282 208 L282 152 L306 128 L372 128 L384 152 L384 208 Z"
+        fill="${O}" stroke="${Od}" stroke-width="3"/>
+  <path d="M306 136 L364 136 L374 154 L306 154 Z" fill="#101214" stroke="#33363b" stroke-width="2"/>
+  <rect x="296" y="160" width="80" height="8" rx="2" fill="${Od}"/>
+  <rect x="384" y="168" width="26" height="40" rx="4" fill="#33363b"/>
+  <circle cx="397" cy="188" r="7" fill="#6b7077"/>
+  <path d="M410 208 L410 162 L470 150 L560 150 L560 208 Z" fill="${O}" stroke="${Od}" stroke-width="3"/>
+  <line x1="470" y1="168" x2="650" y2="146" stroke="${Od}" stroke-width="14" stroke-linecap="round"/>
+  <line x1="500" y1="196" x2="640" y2="168" stroke="#3a3d42" stroke-width="8" stroke-linecap="round"/>
+  <path id="tw-hyd" d="M650 146 L664 120 L716 108 L748 138 L740 208 L662 208 Z"
+        fill="${O}" stroke="${Od}" stroke-width="3"/>
+  <path d="M716 108 L748 138 L758 132 L730 100 Z" fill="${Od}"/>
+  <path d="M740 208 L768 208 L774 196 L744 194 Z" fill="#3a3d42"/>
+  <line x1="662" y1="208" x2="740" y2="208" stroke="#33363b" stroke-width="4"/>
+  ${wheel(216,236,40)} ${wheel(508,236,40)}
+  <g opacity="0.35"><circle cx="206" cy="106" r="5" fill="#6b7077">
+    <animate attributeName="cy" values="106;88" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.5;0" dur="2.4s" repeatCount="indefinite"/></circle></g>`;
+}
+
+/* TH551i — yeraltı kamyonu: solda gri kabin, sağda damper */
+function drawTruck(){
+  const O='#e8582a', Od='#c24312';
+  return `
+  <line x1="30" y1="272" x2="870" y2="272" stroke="#2a2c30" stroke-width="2"/>
+  <rect x="120" y="196" width="600" height="20" rx="5" fill="#33363b"/>
+  <path d="M120 196 L120 132 L150 112 L216 112 L232 150 L232 196 Z"
+        fill="#c9ccd1" stroke="#8a8f98" stroke-width="3"/>
+  <path d="M150 120 L210 120 L222 148 L150 148 Z" fill="#101214" stroke="#33363b" stroke-width="2"/>
+  <rect x="120" y="176" width="112" height="8" fill="${O}"/>
+  <path id="tw-eng" d="M232 196 L232 150 L330 144 L344 196 Z" fill="${O}" stroke="${Od}" stroke-width="3"/>
+  <line x1="248" y1="160" x2="316" y2="156" stroke="${Od}" stroke-width="3"/>
+  <line x1="250" y1="172" x2="322" y2="168" stroke="${Od}" stroke-width="3"/>
+  <path id="tw-hyd" d="M344 196 L352 148 L560 128 L716 92 L724 118 L700 196 Z"
+        fill="${O}" stroke="${Od}" stroke-width="3"/>
+  <path d="M352 148 L560 128 L716 92 L718 100 L562 136 L356 156 Z" fill="#1d1f22"/>
+  <line x1="420" y1="196" x2="428" y2="146" stroke="#3a3d42" stroke-width="7"/>
+  <line x1="380" y1="196" x2="470" y2="150" stroke="#6b7077" stroke-width="6" stroke-linecap="round"/>
+  ${wheel(196,236,38)} ${wheel(500,236,38)} ${wheel(596,236,38)}
+  <g opacity="0.35"><circle cx="338" cy="120" r="5" fill="#6b7077">
+    <animate attributeName="cy" values="120;100" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.5;0" dur="2.4s" repeatCount="indefinite"/></circle></g>`;
+}
+
+function twinBuild(){
+  const truck = state.vehicle.id.startsWith('TH');
+  const g=document.getElementById('twin-world');
+  const ex = truck?288:200, hx = truck?560:700, wx = truck?500:508;
+  g.innerHTML = (truck?drawTruck():drawLoader()) + `
+    <g class="twin-lbl">
+      <circle id="tw-d-motor" cx="${ex}" cy="${truck?170:174}" r="6" fill="var(--green)"/>
+      <line class="t-line" x1="${ex}" y1="${truck?162:166}" x2="${ex}" y2="70" stroke-dasharray="4 4"/>
+      <text class="t-lbl" x="${ex-54}" y="44">MOTOR — YAĞ SICAKLIĞI · AKIM</text>
+      <text class="t-val" id="tw-v-motor" x="${ex-54}" y="64" fill="var(--red)">—</text>
+      <circle id="tw-d-hyd" cx="${hx}" cy="${truck?126:150}" r="6" fill="var(--green)"/>
+      <line class="t-line" x1="${hx}" y1="${truck?118:142}" x2="${hx}" y2="70" stroke-dasharray="4 4"/>
+      <text class="t-lbl" x="${hx-44}" y="44">${truck?'DAMPER':'KEPÇE'} — BASINÇ</text>
+      <text class="t-val" id="tw-v-hyd" x="${hx-44}" y="64" fill="var(--blue)">—</text>
+      <circle id="tw-d-sasi" cx="${wx}" cy="236" r="6" fill="var(--green)"/>
+      <line class="t-line" x1="${wx}" y1="244" x2="${wx}" y2="298" stroke-dasharray="4 4"/>
+      <text class="t-lbl" x="${wx-60}" y="313">ŞASİ — TİTREŞİM · HIZ</text>
+      <text class="t-val" id="tw-v-sasi" x="${wx+76}" y="313" fill="var(--orange)">—</text>
+    </g>`;
+  twinReset();
+}
+
+function twinApply(){
+  document.getElementById('twin-world').setAttribute('transform',
+    `translate(${twinX},${twinY}) scale(${twinScale})`);
+  document.getElementById('twin-svg').setAttribute('data-lod', twinScale>=1.45?'yakin':'uzak');
+}
+function twinZoom(f, px, py){
+  const yeni=Math.min(5,Math.max(0.8,twinScale*f));
+  const cx=(px!==undefined)?px:450, cy=(py!==undefined)?py:160;
+  twinX = cx - (cx - twinX) * (yeni/twinScale);
+  twinY = cy - (cy - twinY) * (yeni/twinScale);
+  twinScale=yeni; twinApply();
+}
+function twinReset(){ twinScale=1; twinX=0; twinY=0; twinApply(); }
+
+/* Sürükle-gezdir + imlece zoom */
+(function(){
+  let drag=null;
+  function vb(e){
+    const svg=document.getElementById('twin-svg');
+    const r=svg.getBoundingClientRect();
+    return [ (e.clientX-r.left)*900/r.width, (e.clientY-r.top)*320/r.height ];
+  }
+  document.addEventListener('pointerdown', e=>{
+    if(e.target.closest && e.target.closest('#twin-svg')){
+      const [x,y]=vb(e); drag={x,y}; }
+  });
+  document.addEventListener('pointermove', e=>{
+    if(!drag) return;
+    const [x,y]=vb(e);
+    twinX += x-drag.x; twinY += y-drag.y; drag={x,y}; twinApply();
+  });
+  document.addEventListener('pointerup', ()=>drag=null);
+  document.addEventListener('wheel', e=>{
+    if(e.target.closest && e.target.closest('#twin-svg')){
+      e.preventDefault();
+      const [x,y]=vb(e);
+      twinZoom(e.deltaY<0?1.15:0.87, x, y);
+    }
+  },{passive:false});
+})();
+
+function twinUpdate(d){
+  if(!document.getElementById('tw-v-motor')) return;
+  const lim = LIMITS[state.vehicle.id.startsWith('TH')?'truck':'loader'];
+  document.getElementById('tw-v-motor').textContent =
+    `${d.temperature.toFixed(1)}°C · ${d.current.toFixed(0)}A`;
+  document.getElementById('tw-v-hyd').textContent = `${d.pressure.toFixed(0)} bar`;
+  document.getElementById('tw-v-sasi').textContent =
+    `${d.vibration.toFixed(2)} mm/s · ${d.speed.toFixed(1)} km/h`;
+  /* Tekerlek dönüşü: hıza orantılı (durunca durur) */
+  const dur = d.speed>0.3 ? Math.max(0.35, 5/d.speed) : 0;
+  document.querySelectorAll('#twin-world .spokes').forEach(sp=>{
+    sp.style.setProperty('--wdur', (dur||3)+'s');
+    sp.style.setProperty('--wrun', dur? 'running':'paused');
+  });
+  /* Arızalı bileşen işareti: normal üst sınırı en çok aşan sensör */
+  const sapma={
+    motor: Math.max(d.temperature/lim.temperature, d.current/lim.current),
+    hyd:   d.pressure/lim.pressure,
+    sasi:  d.vibration/lim.vibration,
+  };
+  const kotu = Object.keys(sapma).reduce((a,b)=>sapma[a]>sapma[b]?a:b);
+  ['motor','hyd','sasi'].forEach(k=>{
+    const dot=document.getElementById(`tw-d-${k}`);
+    const ariza = d.is_anomaly && k===kotu && sapma[k]>1;
+    dot.setAttribute('fill', ariza?'var(--red)':(sapma[k]>1?'var(--yellow)':'var(--green)'));
+    dot.setAttribute('r', ariza?9:6);
+    dot.classList.toggle('t-fault', ariza);
+    const part=document.getElementById(k==='motor'?'tw-eng':k==='hyd'?'tw-hyd':null);
+    if(part) part.setAttribute('stroke', ariza?'var(--red)':'#c24312');
+  });
+  document.getElementById('twin-status').textContent =
+    d.is_anomaly ? 'ANOMALİ — arızalı bileşen işaretli' : '';
+}
+
+/* ── Çekmeceler ── */
+function openDrawer(name){
+  closeDrawers();
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById(`drawer-${name}`).classList.add('show');
+  if(name==='alarms') loadAlarms();
+  if(name==='detail') loadDetail();
+  if(name==='chat') loadChatModel();
+}
+function closeDrawers(){
+  document.getElementById('overlay').classList.remove('show');
+  document.querySelectorAll('.drawer').forEach(d=>d.classList.remove('show'));
+}
+
+async function loadAlarms(){
+  const b=document.getElementById('alarms-body');
+  b.innerHTML='<div class="mini">Yükleniyor…</div>';
+  try{
+    const r=await fetch(`${API}/dashboard/recent-anomalies?limit=30`);
+    let list=await r.json();
+    const f=document.getElementById('alarm-filter').value;
+    if(f) list=list.filter(a=>a.equipment_id===f);
+    if(!list.length){ b.innerHTML='<div class="mini">Kayıtlı uyarı yok.</div>'; return; }
+    b.innerHTML=list.map(a=>{
+      const t=a.time.slice(0,16).replace('T',' ');
+      const critical=a.anomaly_score>=0.7;
+      return `<div class="alarm">
+        <div class="a-top"><span>${a.equipment_id} · ${t}</span>
+          <span class="a-score" style="color:${critical?'var(--red)':'var(--yellow)'}">${a.anomaly_score.toFixed(2)}</span></div>
+        <div class="a-desc">${(a.description||'').replace(' || OTOMATİK TAHMİN','<br><b style="color:var(--text)">OTOMATİK TAHMİN</b>')}</div>
+      </div>`;
+    }).join('');
+  }catch(e){ b.innerHTML='<div class="mini">Uyarılar yüklenemedi.</div>'; }
+}
+
+async function pollAlarmCount(){
+  try{
+    const r=await fetch(`${API}/dashboard/summary`);
+    const d=await r.json();
+    const el=document.getElementById('alarm-cnt');
+    if(d.anomali_24h>0){ el.textContent=d.anomali_24h; el.classList.add('show'); }
+    else el.classList.remove('show');
+  }catch(e){}
+}
+
+async function loadDetail(){
+  const b=document.getElementById('detail-body');
+  b.innerHTML='<div class="mini">Yükleniyor…</div>';
+  try{
+    const [s,m,scenHtml]=await Promise.all([
+      fetch(`${API}/dashboard/summary`).then(r=>r.json()),
+      fetch(`${API}/dashboard/mqtt-status`).then(r=>r.json()),
+      scenarioSelectHtml(),
+    ]);
+    b.innerHTML=`
+      <div style="font-size:0.72rem;color:var(--mut);text-transform:uppercase;letter-spacing:1.2px">Simülatör Çalışma Koşulu</div>
+      ${scenHtml}
+      <div class="mini" id="scenario-durum" style="margin:8px 0 20px">Aracın fiziksel koşulunu seçin; simülatör o koşulda gerçekçi, birbirine bağlı sensör verisi üretir.</div>
+      <div style="font-size:0.72rem;color:var(--mut);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px">Sistem Durumu</div>
+      <div class="kv"><span>Araç</span><span>${state.vehicle?state.vehicle.id:'—'}</span></div>
+      <div class="kv"><span>Toplam sensör okuması</span><span>${s.toplam_okuma.toLocaleString('tr')}</span></div>
+      <div class="kv"><span>Anomali (son 24 saat)</span><span>${s.anomali_24h}</span></div>
+      <div class="kv"><span>Anomali (son 1 saat)</span><span>${s.anomali_1h}</span></div>
+      <div class="kv"><span>Veri bağlantısı</span><span>${m.baglanti==='aktif'?'<span style="color:var(--green)">MQTT aktif</span>':'<span style="color:var(--red)">Kapalı</span>'}</span></div>
+      <div class="kv"><span>Anomali modeli</span><span>Isolation Forest</span></div>
+      <div class="kv"><span>Ömür tahmini</span><span>LSTM</span></div>
+      <div class="kv"><span>Uyarı eşiği</span><span>0.6 uyarı · 0.7 kritik</span></div>`;
+  }catch(e){ b.innerHTML='<div class="mini">Detay yüklenemedi.</div>'; }
+}
+
+/* ── Rapor: indir + e-posta gönder ── */
+async function raporOlustur(){
+  const b=document.getElementById('rapor-btn'), d=document.getElementById('rapor-durum');
+  b.disabled=true; d.textContent='Rapor oluşturuluyor ve gönderiliyor…';
+  window.open('/reports/pdf?saat=24','_blank');
+  try{
+    const r=await fetch('/reports/email?saat=24',{method:'POST'});
+    const j=await r.json();
+    d.textContent = j.gonderildi
+      ? 'Rapor e-posta ile gönderildi: ' + j.alicilar.join(', ')
+      : 'E-posta gönderilemedi — SMTP ayarlarını kontrol edin.';
+  }catch(e){ d.textContent='E-posta gönderilemedi.'; }
+  b.disabled=false;
+}
+
+/* ── Servis Asistanı ── */
+async function loadChatModel(){
+  try{
+    const r=await fetch(`${API}/rag/status`); const d=await r.json();
+    document.getElementById('chat-model').textContent=`Model: ${d.model} — yerel çalışır`;
+  }catch(e){}
+}
+function addMsg(cls,html){
+  const w=document.getElementById('chat-msgs');
+  const el=document.createElement('div'); el.className=`msg ${cls}`; el.innerHTML=html;
+  w.appendChild(el); w.scrollTop=w.scrollHeight;
+  return el;
+}
+async function sendChat(){
+  const inp=document.getElementById('chat-q');
+  const q=inp.value.trim(); if(!q) return;
+  inp.value='';
+  addMsg('user', q.replace(/</g,'&lt;'));
+  const wait=addMsg('bot','Aranıyor…');
+  try{
+    const r=await fetch(`${API}/rag/sor`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({soru:q,limit:1})});
+    const d=await r.json();
+    if(d.sonuclar && d.sonuclar.length){
+      const s=d.sonuclar[0];
+      wait.innerHTML=`<b>${s.title}</b><br>${s.content}
+        ${s.part_numbers.length?`<div class="src">Parça no: ${s.part_numbers.join(', ')}</div>`:''}
+        <div class="src">Kaynak: servis dokümantasyonu · uyum %${(s.score*100).toFixed(0)}</div>`;
+    }else{
+      wait.innerHTML=`Bu soru için vektörlenmiş dokümanlarda güvenilir eşleşme bulunamadı.
+        Doğruluk ilkesi gereği düşük güvenilirlikli sonuç listelenmez.
+        Bu prototipte servis manuelinin yalnızca <b>temsili bir örneği</b> gömülüdür
+        (<b>hidrolik pompa / basınç</b> ve <b>motor akımı</b>).
+        Örnek: <i>"hidrolik basınç düşüklüğünün nedeni nedir?"</i>
+        <div class="src">Üreticinin tam servis manuelleri vektörlendiğinde (İP-8, final) kapsam binlerce sayfaya çıkacak ve tüm arızalar yanıtlanacaktır.</div>`;
+    }
+  }catch(e){ wait.textContent='Bağlantı hatası.'; }
+}
+
+/* ── Arama: araç/maden ID veya ad ── */
+function doSearch(){
+  const q=document.getElementById('search').value.trim().toLowerCase();
+  const box=document.getElementById('search-results');
+  if(q.length<2){ box.style.display='none'; return; }
+  const hits=[];
+  MINES.forEach(m=>{ if((m.id+' '+m.ad).toLowerCase().includes(q))
+    hits.push({tip:'Maden', id:m.id, ad:m.ad, erisim:m.erisim}); });
+  VEHICLES.forEach(v=>{ if((v.id+' '+v.ad).toLowerCase().includes(q))
+    hits.push({tip:'Araç', id:v.id, ad:v.ad, erisim:v.erisim}); });
+  if(!hits.length){ box.style.display='none'; return; }
+  box.innerHTML=hits.slice(0,7).map(h=>
+    h.erisim
+      ? `<div onclick="searchGo('${h.tip}','${h.id}')"><b>${h.id}</b> — ${h.ad} <span style="color:var(--mut2)">· ${h.tip}</span></div>`
+      : `<div class="dis"><b>${h.id}</b> — ${h.ad} <span>· erişim yok</span></div>`
+  ).join('');
+  box.style.display='block';
+}
+function searchGo(tip,id){
+  document.getElementById('search-results').style.display='none';
+  document.getElementById('search').value='';
+  if(tip==='Maden'){ show('view-sites'); renderMines(); selectMine(id); pollAlarmCount(); }
+  else selectVehicle(id);
+}
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.search-wrap'))
+    document.getElementById('search-results').style.display='none';
+});
+
+/* ── Başlangıç: açılış yalnız oturumda bir kez ── */
+if(sessionStorage.getItem('girildi')){ renderMines(); show('view-sites'); pollAlarmCount(); }
+else show('view-splash');
+setInterval(pollAlarmCount, 30000);
+</script>
+</body>
+</html>

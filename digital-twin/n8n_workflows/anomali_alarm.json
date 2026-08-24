@@ -1,0 +1,162 @@
+{
+  "name": "Anomali Alarm",
+  "active": true,
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Anomali Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "path": "anomali-alarm",
+        "responseMode": "onReceived",
+        "httpMethod": "POST"
+      },
+      "webhookId": "a1b2c3d4-anomali-alarm"
+    },
+    {
+      "id": "2",
+      "name": "Kritik Filtre",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.anomaly_score }}",
+              "rightValue": 0.7,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3",
+      "name": "Sistem Log",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [
+        680,
+        160
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "log_mesaji",
+              "type": "string",
+              "value": "={{ \"[KRITIK] \" + $json.equipment_id + \" | skor=\" + $json.anomaly_score + \" | \" + $json.description }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "4",
+      "name": "PDF Rapor Uret",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        680,
+        280
+      ],
+      "parameters": {
+        "url": "http://host.docker.internal:8000/reports/pdf?saat=1",
+        "method": "GET",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "5",
+      "name": "Slack Bildirim (KONF GEREK)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        680,
+        400
+      ],
+      "disabled": true,
+      "parameters": {
+        "channel": "#bakim-alarm",
+        "text": "={{ \"🚨 Maden Ekipman Alarmı | Ekipman: \" + $json.equipment_id + \" | Skor: \" + $json.anomaly_score + \" | \" + $json.description }}"
+      }
+    },
+    {
+      "id": "6",
+      "name": "E-posta Bildirim (KONF GEREK)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        680,
+        520
+      ],
+      "disabled": true,
+      "parameters": {
+        "fromEmail": "alarm@cankayazilim.tr",
+        "toEmail": "bakim@madenisletmesi.tr",
+        "subject": "=[KRITIK] {{ $json.equipment_id }} - Anomali",
+        "text": "={{ \"Detayli rapor: http://localhost:8000/reports/pdf\" }}"
+      }
+    }
+  ],
+  "connections": {
+    "Anomali Webhook": {
+      "main": [
+        [
+          {
+            "node": "Kritik Filtre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kritik Filtre": {
+      "main": [
+        [
+          {
+            "node": "Sistem Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "PDF Rapor Uret",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack Bildirim (KONF GEREK)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "E-posta Bildirim (KONF GEREK)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "id": "AnomaliAlarm2026"
+}

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "digital-twin-api",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["proje/digital_twin-main/start.sh"],
+      "port": 8000,
+      "autoPort": false
+    }
+  ]
+}

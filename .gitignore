@@ -1,0 +1,19 @@
+# ── Gizli / özel içerik (asla push edilmez) ──
+_arsiv/
+
+# ── Ortam ve sırlar ──
+.env
+.env.*
+!.env.example
+.venv/
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Sistem ──
+.DS_Store
+
+# ── Yerel ayarlar ──
+.claude/settings.local.json
