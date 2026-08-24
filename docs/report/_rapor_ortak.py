@@ -10,7 +10,6 @@ from fpdf.enums import XPos, YPos
 
 KOK   = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT  = os.path.join(KOK, "digital-twin", "fonts")
-LOGO  = os.path.join(KOK, "digital-twin", "static", "logo_canka.png")
 IMG   = os.path.join(KOK, "docs", "images")
 ARAYUZ = os.path.join(IMG, "arayuz")
 SEMA   = os.path.join(IMG, "semalar")
@@ -244,12 +243,16 @@ class Rapor(FPDF):
         self.add_page()
         self.set_fill_color(*PRIMARY)
         self.rect(0, 0, 210, 62, style="F")
-        if os.path.exists(LOGO):
-            self.image(LOGO, x=15, y=12, h=30)
-        self.set_xy(15, 46)
-        self.set_font("DJ", "B", 15)
+        # Kelime markası (logo kullanılmaz)
+        self.set_xy(15, 24)
+        self.set_font("DJ", "B", 26)
         self.set_text_color(*WHITE)
-        self.cell(0, 8, "ÇankaYazılım", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.cell(0, 12, "ÇankaYazılım", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_x(15)
+        self.set_font("DJ", "", 9)
+        self.set_text_color(214, 232, 226)
+        self.cell(0, 5, "Endüstriyel Yapay Zeka  ·  Industrial AI",
+                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
         self.set_xy(15, 84)
         self.set_font("DJ", "B", 19)

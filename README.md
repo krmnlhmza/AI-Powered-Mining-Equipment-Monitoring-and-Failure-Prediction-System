@@ -1,6 +1,5 @@
 <div align="center">
 
-<img src="digital-twin/static/logo_canka.png" alt="ÇankaYazılım" height="120">
 
 # AI-Powered Mining Equipment Monitoring and Failure Prediction System
 

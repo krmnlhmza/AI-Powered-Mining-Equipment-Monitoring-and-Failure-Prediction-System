@@ -1,6 +1,5 @@
 <div align="center">
 
-<img src="digital-twin/static/logo_canka.png" alt="ÇankaYazılım" height="120">
 
 # Yapay Zeka Destekli Maden Ekipmanı İzleme ve Arıza Tahmin Sistemi
 

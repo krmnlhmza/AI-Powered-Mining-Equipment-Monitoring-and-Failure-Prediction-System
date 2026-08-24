@@ -26,7 +26,6 @@ input,select{font-family:inherit}
 #view-splash{position:fixed;inset:0;background:var(--bg);display:none;
   flex-direction:column;align-items:center;justify-content:center;gap:26px;z-index:100}
 #view-splash.active{display:flex}
-#view-splash img.logo-canka{max-height:200px;max-width:60vw}
 #view-splash .brand{font-size:3rem;font-weight:800;letter-spacing:1px}
 #view-splash .sub{font-size:0.95rem;color:var(--mut);letter-spacing:2px;text-transform:uppercase}
 #view-splash .enter{margin-top:10px;background:none;border:1px solid var(--line);color:var(--mut);
@@ -217,7 +216,6 @@ header .spacer{flex:1}
 
 <!-- ═══ 1) AÇILIŞ (yalnız oturumda bir kez) ═══ -->
 <section id="view-splash" class="view">
-  <img class="logo-canka" src="/static/logo_canka.png" alt="" onerror="this.style.display='none'">
   <div class="brand">ÇankaYazılım</div>
   <div class="sub">Maden Ekipmanı İzleme ve Arıza Tahmin Sistemi</div>
   <button class="enter" onclick="goLogin()">Sisteme Giriş</button>
