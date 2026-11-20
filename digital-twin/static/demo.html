@@ -322,9 +322,10 @@ header .spacer{flex:1}
       </div>
       <div class="panel" style="margin-bottom:0">
         <div class="p-title"><span>Canlı Test</span>
-          <span class="info-dot" tabindex="0">!<span class="info-pop" id="test-info-pop">Canlı test, dijital ikizin (simülatörün) kendiliğinden anormal değer üretmesini beklemeden, sistemin arıza anındaki tepkisini — tespit, kalan ömür tahmini ve teknik asistan — kontrollü biçimde görmek içindir. (Yalnız demo amaçlıdır.)</span></span>
+          <span class="info-dot" tabindex="0">!<span class="info-pop" id="test-info-pop">Dijital ikizde arızalar zamanla kendiliğinden de gelişir. Canlı test, sıradaki bileşende bozulmayı ŞİMDİ başlatır: hasar fiziksel modelle büyür, sensörlere yansıdıkça tespit edilir ve kalan ömür izlenir. Arıza kendiliğinden kaybolmaz — "Bakım Yap" ile giderilir ya da arızaya kadar ilerler.</span></span>
         </div>
         <button class="btn" id="ariza-btn" style="width:100%;margin-top:2px" onclick="arizaEnjekte()">Testi Başlat</button>
+        <button class="btn" id="bakim-btn" style="width:100%;margin-top:6px" onclick="bakimYap()">Bakım Yap (bileşenleri yenile)</button>
       </div>
     </div>
   </div>
@@ -523,7 +524,7 @@ async function refreshLive(){
       if(!window._prevAnom){
         /* Anomali doğrulandı → LSTM'e "analiz" süresi (yapay/anlık durmasın) */
         document.getElementById('rul-box').innerHTML =
-          '<div class="mini">Anomali doğrulandı. LSTM, son 20 okumanın zaman serisini değerlendiriyor…</div>';
+          '<div class="mini">Anomali doğrulandı. LSTM, çalışma-saati özet geçmişini değerlendiriyor…</div>';
         _rulSon = Date.now();
         setTimeout(()=>{ _rulSon = 0; rulNotify(); }, 4000);
         pollAlarmCount();
@@ -658,7 +659,7 @@ async function rulNotify(){
     const arac = state.vehicle ? state.vehicle.ad : d.equipment_id;
     box.innerHTML = `<div style="font-size:0.86rem;line-height:1.75">
       <div style="font-weight:700;color:${renk};letter-spacing:0.3px;margin-bottom:8px">
-        ${d.durum} · ${d.ariza||'Arıza gelişimi'}</div>
+        ${d.durum} · ${d.ariza||'Kalıcı bozulma trendi yok'}</div>
       <div><span style="color:var(--mut)">Etkilenen sistem:</span> ${d.sistem||d.baskin_sensor} — ${arac}</div>
       <div><span style="color:var(--mut)">Tahmini kalan faydalı ömür (RUL):</span> <b>~${Math.round(d.rul_saat)} saat</b></div>
       <div style="margin-top:4px"><span style="color:var(--mut)">Gerekçe:</span> ${d.gerekce||''}</div>
@@ -669,8 +670,8 @@ async function rulNotify(){
 }
 
 /* ── Canlı Test (Senaryo 2): tek buton — sıralı çok-sensörlü arıza enjeksiyonu ──
-   Not: Dijital ikizin arıza üretmesi normalde beklenemez; bu buton, demo için
-   arızayı kontrollü biçimde tetikler. Her basış sıradaki arızayı verir; ardından
+   Not: v2'de buton arızayı "enjekte" etmez; sıradaki bileşende bozulmayı
+   başlatır — hasar fiziksel modelle büyür, Bakım Yap ile giderilir. Her basış sıradaki arızayı verir; ardından
    IF yakalar → LSTM kalan ömrü tahmin eder → Uyarı/Rapor → Servis Asistanı. */
 const ARIZALAR = [
   {kod:'yag_pompasi', ad:'Yağ / Hidrolik Pompa Arızası', imza:'basınç düşer, titreşim artar, yağ ısısı düşer, yakıt artar'},
@@ -682,6 +683,14 @@ const ARIZALAR = [
   {kod:'transmisyon', ad:'Transmisyon Arızası',           imza:'şanzıman titreşimi ve yağ sıcaklığı artar'},
   {kod:'sogutma',     ad:'Soğutma Sistemi Arızası',       imza:'radyatör/fan yetersiz, motor sıcaklığı sürekli yükselir'},
 ];
+async function bakimYap(){
+  try{
+    const r=await fetch(`${API}/sensors/maintenance/${state.vehicle.id}`,{method:'POST'});
+    const d=await r.json();
+    document.getElementById('rul-box').innerHTML =
+      `<div class="mini">Bakım uygulandı${d.yenilenen&&d.yenilenen.length?': '+d.yenilenen.join(', '):''}. Yeni özetler biriktikçe RUL güncellenecek.</div>`;
+  }catch(e){}
+}
 let _arizaIdx = 0;   /* GLOBAL sıra: araçlar arası sıfırlanmaz. "!" balonu sabittir. */
 async function arizaEnjekte(){
   const btn=document.getElementById('ariza-btn');

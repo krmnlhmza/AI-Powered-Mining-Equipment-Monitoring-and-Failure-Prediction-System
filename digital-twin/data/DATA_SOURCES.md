@@ -11,28 +11,17 @@ Matzka, S. (2020)
 
 ### How it is used in this project
 
-This dataset is **not used to train any model.** The only value taken from it is the
-**realistic failure rate** — the mean of the `Target` column (≈ 3.4%).
-
-That rate is passed to the `contamination` parameter of the Isolation Forest so the anomaly
-detector is calibrated against a realistic proportion of faults rather than an arbitrary guess.
-
-**Used in:** [`ml/train.py`](../ml/train.py) → `_kaggle_failure_rate()`
-
-If the file is missing, the code falls back to an industry-average assumption of 5% and continues
-to work normally.
+**As of v2, this dataset is not used by any model.** In v1 its failure rate (mean of `Target`,
+≈ 3.4%) was passed to the Isolation Forest `contamination` parameter. That was removed: the
+dataset describes a different machine type (milling process), and v2 calibrates anomaly scores
+directly from healthy-fleet residual quantiles instead. The file is kept for reference only.
 
 ### Bu projede nasıl kullanılıyor
 
-Bu veri seti **hiçbir modeli eğitmek için kullanılmaz.** Ondan alınan tek bilgi, **gerçekçi arıza
-oranıdır** — `Target` sütununun ortalaması (≈ %3,4).
-
-Bu oran, Isolation Forest'ın `contamination` parametresine verilir; böylece anomali tespiti
-rastgele bir varsayım yerine gerçekçi bir arıza oranına göre kalibre edilir.
-
-**Kullanıldığı yer:** [`ml/train.py`](../ml/train.py) → `_kaggle_failure_rate()`
-
-Dosya bulunmazsa kod, endüstri ortalaması olan %5 varsayımına düşer ve normal çalışmaya devam eder.
+**v2 itibarıyla bu veri seti hiçbir modelde kullanılmamaktadır.** v1'de arıza oranı (`Target`
+ortalaması, ≈ %3,4) Isolation Forest'ın `contamination` parametresine veriliyordu. Bu kaldırıldı:
+veri seti farklı bir makine türünü (talaşlı imalat) tanımlıyor; v2 anomali skorlarını doğrudan
+sağlıklı filo artıklarının kantillerinden kalibre ediyor. Dosya yalnız referans olarak tutulur.
 
 ---
 

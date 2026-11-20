@@ -9,7 +9,8 @@ from sqlalchemy import select, desc
 
 from app.database import get_db
 from app.models.sensor import SensorReading
-from app.services.lstm_predictor import predict, predict_rul, SEQ_LEN
+from app.services.lstm_predictor import (predict, predict_rul, SEQ_LEN,
+                                         offline_degradation_demo)
 from data.simulator import project_future
 
 router = APIRouter(prefix="/predict", tags=["Tahmin (LSTM)"])
@@ -36,46 +37,31 @@ async def _recent_sequence(equipment_id: str, db: AsyncSession):
 
 @router.get("/{equipment_id}")
 async def predict_next(equipment_id: str, db: AsyncSession = Depends(get_db)):
+    """Son 20 okumadan 30 sn sonrası tahmini (LSTM)."""
     sequence = await _recent_sequence(equipment_id, db)
-    return {"equipment_id": equipment_id, "tahmin": predict(sequence)}
+    return {"equipment_id": equipment_id, "tahmin": predict(sequence, equipment_id)}
 
 
 @router.get("/rul/{equipment_id}")
 async def predict_remaining_life(
     equipment_id: str,
-    senaryo: str = "normal",   # normal | degradasyon
-    db: AsyncSession = Depends(get_db),
+    senaryo: str = "normal",       # normal | degradasyon
+    ilerleme: float = 0.7,         # degradasyon: ömrün hangi noktası (0-1)
+    bilesen: str | None = None,    # degradasyon: bozulacak bileşen (ör. rulman)
 ):
-    """
-    Kalan Faydalı Ömür (RUL) tahmini.
-    - senaryo=normal: gerçek son ölçümlerle (sağlıklı durumda yüksek RUL)
-    - senaryo=degradasyon: ilerleyen bir arıza senaryosu (jüri demosu)
-    """
+    """Kalan Faydalı Ömür (RUL).
+    - senaryo=normal: makinenin canlı çalışma-saati özetlerinden
+    - senaryo=degradasyon: yeni bir sanal makinede sondan sona bozulma;
+      gerçek RUL ile karşılaştırmalı (modelin dürüst sınaması)"""
     if senaryo == "degradasyon":
-        from data.simulator import generate_degradation_run
-        # arızaya yaklaşmış bir noktadan SEQ_LEN'lik pencere üret
-        run = generate_degradation_run(equipment_id, steps=60)
-        window = run.iloc[40:40 + SEQ_LEN]   # sona yakın → düşük RUL
-        sequence = window[["temperature", "vibration", "pressure",
-                           "current", "speed"]].values.tolist()
-        gercek_rul = round(float(window["rul_hours"].iloc[-1]), 1)
-        result = predict_rul(sequence, equipment_id)
-        result["senaryo"]     = "degradasyon (arıza ilerliyor)"
-        result["gercek_rul"]  = gercek_rul   # doğrulama için
-        result["ariza_modu"]  = run["mode"].iloc[0]
-        return result
-
-    sequence = await _recent_sequence(equipment_id, db)
-    result = predict_rul(sequence, equipment_id)
+        return offline_degradation_demo(equipment_id, ilerleme=ilerleme, bilesen=bilesen)
+    result = predict_rul(equipment_id)
     result["senaryo"] = "gerçek zamanlı (canlı veri)"
     return result
 
 
 @router.get("/projeksiyon/{equipment_id}")
 async def future_projection(equipment_id: str, saat: float = 100.0):
-    """
-    Dijital ikiz projeksiyonu: makine şu anki gibi `saat` saat daha
-    çalışırsa hangi yıpranma seviyesinde olur, sensör tabanları nereye
-    kayar? Bakım planlama için ileriye dönük öngörü.
-    """
+    """Dijital ikiz projeksiyonu: başlamış hasarları ortalama döngü stresiyle
+    `saat` çalışma saati ileri sarar."""
     return project_future(equipment_id, saat)

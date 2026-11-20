@@ -21,8 +21,8 @@ print("Canlı veri akışı başladı. Durdurmak için Ctrl+C\n")
 cycle = 0
 while True:
     cycle += 1
-    # Her 20 döngüde bir zorunlu anomali
-    force_anomaly = (cycle % 20 == 0)
+    # v2: periyodik zorla anomali YOK — arızalar ikizde fiziksel olarak gelişir
+    force_anomaly = False
 
     for eq_id in EQUIPMENT:
         url = f"{API}/sensors/simulate/{eq_id}"

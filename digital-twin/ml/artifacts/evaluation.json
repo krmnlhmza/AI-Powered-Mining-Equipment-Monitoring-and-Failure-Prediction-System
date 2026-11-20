@@ -1,0 +1,271 @@
+{
+  "tutarlilik_max_fark": 0.0,
+  "anomali": {
+    "loader": {
+      "yanlis_alarm_olay_1000sa": 0.361,
+      "yanlis_alarm_okuma_orani": 0.006833333333333334,
+      "yakalama_orani": 1.0,
+      "oncu_sure_medyan_sa": 67.08748245239258,
+      "bilesen": {
+        "rulman": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 58.8,
+          "tespitte_hasar_medyan": 0.22
+        },
+        "hidrolik_pompa": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 103.5,
+          "tespitte_hasar_medyan": 0.06
+        },
+        "sogutma": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 63.1,
+          "tespitte_hasar_medyan": 0.32
+        },
+        "motor_isi": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 59.8,
+          "tespitte_hasar_medyan": 0.27
+        },
+        "enjektor": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 71.8,
+          "tespitte_hasar_medyan": 0.15
+        },
+        "motor_sargi": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 113.7,
+          "tespitte_hasar_medyan": 0.08
+        },
+        "fren": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 48.9,
+          "tespitte_hasar_medyan": 0.27
+        },
+        "transmisyon": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 53.9,
+          "tespitte_hasar_medyan": 0.28
+        }
+      }
+    },
+    "truck": {
+      "yanlis_alarm_olay_1000sa": 0.097,
+      "yanlis_alarm_okuma_orani": 0.0007708333333333333,
+      "yakalama_orani": 1.0,
+      "oncu_sure_medyan_sa": 64.22968673706055,
+      "bilesen": {
+        "rulman": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 58.8,
+          "tespitte_hasar_medyan": 0.22
+        },
+        "hidrolik_pompa": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 95.5,
+          "tespitte_hasar_medyan": 0.07
+        },
+        "sogutma": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 56.9,
+          "tespitte_hasar_medyan": 0.32
+        },
+        "motor_isi": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 59.4,
+          "tespitte_hasar_medyan": 0.27
+        },
+        "enjektor": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 84.0,
+          "tespitte_hasar_medyan": 0.2
+        },
+        "motor_sargi": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 126.6,
+          "tespitte_hasar_medyan": 0.07
+        },
+        "fren": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 31.3,
+          "tespitte_hasar_medyan": 0.41
+        },
+        "transmisyon": {
+          "n": 30,
+          "yakalama": 1.0,
+          "oncu_sure_medyan_sa": 53.5,
+          "tespitte_hasar_medyan": 0.28
+        }
+      }
+    }
+  },
+  "rul": {
+    "pencere": 20466,
+    "birim": 400,
+    "tüm pencereler": [
+      {
+        "model": "sabit ortalama",
+        "RMSE": 50.352535247802734,
+        "MAE": 44.774147033691406,
+        "NASA": 727.6615850679175
+      },
+      {
+        "model": "GBM (son özet)",
+        "RMSE": 24.48145854539009,
+        "MAE": 18.845971391720884,
+        "NASA": 54.69669064784095
+      },
+      {
+        "model": "LSTM (özet dizisi)",
+        "RMSE": 21.305648803710938,
+        "MAE": 15.896018028259277,
+        "NASA": 39.869625232092254
+      }
+    ],
+    "gerçek RUL ≤ 100 sa": [
+      {
+        "model": "sabit ortalama",
+        "RMSE": 54.09892272949219,
+        "MAE": 45.9170036315918,
+        "NASA": 1442.2480503899221
+      },
+      {
+        "model": "GBM (son özet)",
+        "RMSE": 26.557508401555427,
+        "MAE": 19.423325462385936,
+        "NASA": 100.39452465849138
+      },
+      {
+        "model": "LSTM (özet dizisi)",
+        "RMSE": 23.1579532623291,
+        "MAE": 15.435784339904785,
+        "NASA": 75.81513697260547
+      }
+    ],
+    "gerçek RUL ≤ 30 sa": [
+      {
+        "model": "sabit ortalama",
+        "RMSE": 80.9202651977539,
+        "MAE": 80.4338150024414,
+        "NASA": 4486.542875774372
+      },
+      {
+        "model": "GBM (son özet)",
+        "RMSE": 13.162752757778303,
+        "MAE": 8.983562912342832,
+        "NASA": 46.075941640512745
+      },
+      {
+        "model": "LSTM (özet dizisi)",
+        "RMSE": 8.805554389953613,
+        "MAE": 5.689933776855469,
+        "NASA": 32.636243682751875
+      }
+    ],
+    "bilesen_dogrulugu": 0.5437616387337058,
+    "bilesen_dogrulugu_rul72": 0.775279348875707,
+    "karisan_ciftler": [
+      [
+        "sogutma",
+        "motor_isi",
+        770
+      ],
+      [
+        "transmisyon",
+        "rulman",
+        150
+      ],
+      [
+        "fren",
+        "saglikli",
+        104
+      ],
+      [
+        "motor_isi",
+        "sogutma",
+        87
+      ],
+      [
+        "rulman",
+        "transmisyon",
+        57
+      ],
+      [
+        "fren",
+        "enjektor",
+        55
+      ]
+    ]
+  },
+  "tahmin": {
+    "loader": {
+      "temperature": {
+        "lstm_mae": 0.2949845492839813,
+        "naif_mae": 0.36506858468055725,
+        "iyilesme_yuzde": 19.197500228881836
+      },
+      "vibration": {
+        "lstm_mae": 0.23463711142539978,
+        "naif_mae": 0.6638340950012207,
+        "iyilesme_yuzde": 64.65425109863281
+      },
+      "pressure": {
+        "lstm_mae": 3.3865039348602295,
+        "naif_mae": 6.661933422088623,
+        "iyilesme_yuzde": 49.166351318359375
+      },
+      "current": {
+        "lstm_mae": 3.450817823410034,
+        "naif_mae": 14.18773365020752,
+        "iyilesme_yuzde": 75.67745208740234
+      },
+      "speed": {
+        "lstm_mae": 0.5195184946060181,
+        "naif_mae": 1.558935284614563,
+        "iyilesme_yuzde": 66.67478942871094
+      }
+    },
+    "truck": {
+      "temperature": {
+        "lstm_mae": 0.3407819867134094,
+        "naif_mae": 0.7768933176994324,
+        "iyilesme_yuzde": 56.135292053222656
+      },
+      "vibration": {
+        "lstm_mae": 0.2345782220363617,
+        "naif_mae": 0.5603166818618774,
+        "iyilesme_yuzde": 58.13471221923828
+      },
+      "pressure": {
+        "lstm_mae": 2.4702341556549072,
+        "naif_mae": 3.3224997520446777,
+        "iyilesme_yuzde": 25.651336669921875
+      },
+      "current": {
+        "lstm_mae": 3.935622453689575,
+        "naif_mae": 12.77183723449707,
+        "iyilesme_yuzde": 69.18515014648438
+      },
+      "speed": {
+        "lstm_mae": 1.9515300989151,
+        "naif_mae": 8.82391357421875,
+        "iyilesme_yuzde": 77.88362121582031
+      }
+    }
+  }
+}

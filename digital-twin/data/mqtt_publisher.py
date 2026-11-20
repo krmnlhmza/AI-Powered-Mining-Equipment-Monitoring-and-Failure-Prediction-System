@@ -55,10 +55,9 @@ def run_loop(interval: float = 8.0):
     try:
         while True:
             cycle += 1
-            # her 15 döngüde bir rastgele ekipmana anomali enjekte et
-            force_eq = EQUIPMENT_IDS[cycle % len(EQUIPMENT_IDS)] if cycle % 15 == 0 else None
+            # v2: periyodik zorla anomali YOK — arızalar ikizde fiziksel olarak gelişir
             for eq_id in EQUIPMENT_IDS:
-                r = publish_reading(client, eq_id, force_anomaly=(eq_id == force_eq))
+                r = publish_reading(client, eq_id)
                 print(f"  → maden/{eq_id}/sensor  temp={r['temperature']:.1f} vib={r['vibration']:.2f}")
             time.sleep(interval)
     except KeyboardInterrupt:

@@ -1,375 +1,325 @@
 """
-Model Eğitimi
--------------
-Çalıştırma: python ml/train.py
+Model Eğitimi v2
+════════════════
+Çalıştırma:  .venv/bin/python ml/train.py
 
-1. Isolation Forest  → gerçek Kaggle verisiyle eğitilir
-2. LSTM              → simüle zaman serisiyle eğitilir
+Tüm veriler data/simulator.py'deki fiziksel dijital ikizden, canlı akışla
+AYNI motor ve AYNI okuma aralığıyla (3 sn) üretilir. Bölmeler daima MAKİNE
+(birim) bazındadır: bir makinenin okumaları hem eğitimde hem doğrulamada
+yer almaz (sızıntı yok).
+
+Eğitilen modeller (ekipman tipi başına: loader / truck):
+  1) Normal Davranış Modeli (NBM) — sağlıklı filo verisi
+  2) Isolation Forest — NBM artıkları (z) üzerinde, skor kalibrasyonlu
+  3) RUL LSTM (tipler ortak) — run-to-failure filosundan çalışma-saati
+     özet dizileri → kalan ömür (saat) + arızalanacak bileşen
+  4) Tahminci LSTM — son 20 okuma → 30 sn sonrası (5 sensör)
+
+Çıktılar: ml/artifacts/
 """
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from __future__ import annotations
 
-import pandas as pd
-import numpy as np
+import os
 import pickle
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+os.chdir(ROOT)
+
+import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
 
-DATA_PATH  = "data/predictive_maintenance.csv"
-IF_PATH    = "ml/isolation_forest.pkl"
-SCALER_PATH = "ml/scaler.pkl"
-LSTM_PATH  = "ml/lstm_model.pt"
+from data.simulator import (COMPONENT_NAMES, EQUIPMENT_PROFILES, SENSORS,
+                            STREAM_INTERVAL_S, simulate_streams)
+from ml.features import (N_CTX, SNAP_DIM, TARGETS, NormalBehaviourModel,
+                         baseline_correct_batch, residuals_batch, smooth_z_batch,
+                         snapshots_batch, stream_context_batch, targets_batch)
 
+ART = "ml/artifacts"
+TYPE_EQ = {"loader": "LH517i_001", "truck": "TH551i_001"}   # tip → profil temsilcisi
+DT = STREAM_INTERVAL_S
 
-# ─────────────────────────────────────────────
-# 1. Isolation Forest — EKİPMAN BAŞINA model + skor kalibrasyonu
-# ─────────────────────────────────────────────
-# Neden yenilendi (Adım 4)?
-#   Eski hali: tüm makineler TEK modelde + ham skor "0.5 - score_samples"
-#   formülüyle 0-1'e sıkıştırılıyordu. Sonuç: normal okumalar bile ~0.92
-#   skor alıyor, 0.6/0.7 eşikleri hiçbir şey ayırt etmiyordu.
-#   Yeni hali: her makineye kendi modeli (sunumdaki "her makinenin kendi
-#   normal karakteristiği öğrenilir" cümlesinin karşılığı) + skor,
-#   normal/arızalı veri dağılımlarına göre KALİBRE ediliyor.
+# RUL
+RUL_CAP = 150.0          # saat — üstü "sağlıklı/uzak" (C-MAPSS'teki parçalı doğrusal etiket)
+RUL_SEQ = 30             # özet sayısı (×4 sa = 120 çalışma saati geçmiş)
+RUL_MIN_SNAPS = 4
+N_COMP = len(COMPONENT_NAMES)
+HEALTHY_CLASS = N_COMP   # sınıf indeksi: "yakın arıza yok"
 
-FEATURES = ["temperature", "vibration", "pressure", "current", "speed"]
-IF_BUNDLE_TMPL = "ml/if_{eq}.pkl"   # ekipman başına model paketi
+# Tahminci
+FC_FEATURES = ["temperature", "vibration", "pressure", "current", "speed"]
+FC_SEQ = 20
+FC_HORIZON = 10          # okuma (= 30 sn)
 
-
-def _kaggle_failure_rate() -> float:
-    """Gerçekçi arıza oranını harici referans veri setinden okur.
-
-    VERİ KAYNAĞI (atıf):
-        "Machine Predictive Maintenance Classification" — Kaggle, shivamb.
-        Kaynağı: UCI "AI4I 2020 Predictive Maintenance Dataset"
-        (Matzka, S., 2020), CC BY 4.0 lisanslı.
-        Dosya: data/predictive_maintenance.csv
-
-    NOT: Bu veri seti modelleri EĞİTMEK için kullanılmaz. Ondan alınan tek
-    bilgi, gerçek sahadaki arıza oranıdır (Target sütununun ortalaması,
-    ~%3,4). Bu oran Isolation Forest'ın `contamination` parametresine
-    verilir. Modellerin eğitim verisi, data/simulator.py içindeki fiziksel
-    dijital ikiz simülatöründen üretilir.
-
-    Dosya yoksa endüstri ortalaması %5 varsayılır.
-    """
-    try:
-        return float(pd.read_csv(DATA_PATH)["Target"].mean())   # ~0.034
-    except Exception:
-        return 0.05
+torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
 
 
-def _calibrate(raw_normal, raw_anom) -> dict:
-    """
-    Ham IF skorunu (score_samples; DAHA NEGATİF = daha anormal) 0-1'e çeviren
-    haritanın çapa noktalarını üretir.
-
-    Mantık: x = -ham_skor dersek büyük x = anormal olur. Dört çapa koyarız:
-        normal verinin medyanı  → 0.10  (sağlıklı makine ekranda ~%10 görünsün)
-        normalin %99'luk ucu    → 0.50  (normalin en ekstremi bile 0.6'ya değmesin)
-        arızalı verinin medyanı → 0.85  (tipik arıza, kritik eşiğin üstünde)
-        arızalının %95'i        → 0.98
-    Ara değerler doğrusal interpolasyonla (np.interp) bulunur. Böylece
-    0.6 = "normalin sınırını aştı", 0.7 = "arıza bölgesine girdi" anlamı kazanır.
-    """
-    x_norm, x_anom = -np.asarray(raw_normal), -np.asarray(raw_anom)
-    # Çapalar KESİN artan sırada olmalı. Normal ve arıza dağılımları
-    # örtüşürse (örn. hafif arızalar normalin içine düşerse) arıza çapasını
-    # normalin %99 çapasının ÜSTÜNE itiyoruz — böylece "normalin %99'u
-    # 0.5'in altında kalır" garantisi (yanlış alarm ≤ ~%1) asla bozulmaz.
-    x1 = float(np.median(x_norm))
-    # Normalin %99'luk ucu → 0.50. Köşe fazlar (rölanti/soğuma/boşaltma)
-    # simülatörde 3x yoğun örneklendiği için bu çapa artık onları 0.6 üstüne
-    # itmiyor; kalibrasyonu daha fazla sıkmaya gerek yok (sıkmak arıza recall'ını
-    # bozuyordu). Yanlış alarm ölçümü hold-out normalde ~%1 kalır.
-    x2 = float(np.quantile(x_norm, 0.99))
-    x3 = max(float(np.median(x_anom)),      x2 + 1e-9)
-    x4 = max(float(np.quantile(x_anom, 0.95)), x3 + 1e-9)
-    return {"xp": [x1, x2, x3, x4], "fp": [0.10, 0.50, 0.85, 0.98]}
-
-
-def apply_calibration(model, scaler, calib, rows) -> np.ndarray:
-    """Ham okumaları kalibre edilmiş 0-1 skora çevirir.
-    Eğitimdeki kabul testi ve canlı tespit (anomaly_detector) AYNI yolu kullanır."""
-    raw = model.score_samples(scaler.transform(rows))
-    return np.clip(np.interp(-raw, calib["xp"], calib["fp"]), 0.0, 1.0)
-
-
-def train_one_equipment(eq_id: str, df_pool=None, save: bool = True) -> dict:
-    """Tek bir ekipman için model eğit + kalibre et. Paket döner:
-    {model, scaler, calib}. anomaly_detector eksik model görürse bunu çağırır."""
-    from data.simulator import generate_training_data
-
-    if df_pool is None:
-        df_pool = generate_training_data(n_samples=9000)
-    d = df_pool[df_pool.equipment_id == eq_id]
-
-    # Normal ve arızalı örnekleri AYIR: model yalnız normalden öğrenir,
-    # arızalılar sadece kalibrasyon çapası olarak kullanılır.
-    normal = d[~d.is_anomaly][FEATURES].values
-    anom   = d[d.is_anomaly][FEATURES].values
-
-    # KRİTİK: normal veri ikiye bölünür —
-    #   %70'i modelin EĞİTİMİNE girer,
-    #   %30'u modelden SAKLANIR ve kalibrasyon çapaları bu saklanan
-    #   (hold-out) parçadan hesaplanır.
-    # Neden? Model, eğitimde gördüğü noktalara "tanıdık" diye iyimser puan
-    # verir; çapaları o iyimser puanlarla kurarsak gerçek (taze) veri
-    # eşiği kolayca aşar. İlk denemede bu hatayı yaptık: eğitim verisinde
-    # %1 görünen yanlış alarm, taze veride %20-30 çıktı. Hold-out ile
-    # çapalar "modelin hiç görmediği normal veri şöyle puan alır"
-    # gerçeğine göre kurulur ve taze veri ölçümü eğitim raporuyla tutar.
-    rng = np.random.default_rng(42)
-    idx = rng.permutation(len(normal))
-    kesim = int(len(normal) * 0.7)
-    normal_egitim, normal_saklanan = normal[idx[:kesim]], normal[idx[kesim:]]
-
-    # Ölçekleyici de yalnız eğitim parçasından öğrenir
-    scaler = StandardScaler().fit(normal_egitim)
-    model = IsolationForest(n_estimators=200,
-                            contamination=_kaggle_failure_rate(),
-                            random_state=42).fit(scaler.transform(normal_egitim))
-    calib = _calibrate(model.score_samples(scaler.transform(normal_saklanan)),
-                       model.score_samples(scaler.transform(anom)))
-
-    bundle = {"model": model, "scaler": scaler, "calib": calib}
-    if save:
-        os.makedirs("ml", exist_ok=True)
-        with open(IF_BUNDLE_TMPL.format(eq=eq_id), "wb") as f:
-            pickle.dump(bundle, f)
-
-    # ── Kabul testi: eşik 0.6 ile tek-okuma performansı ─────────────
-    # Yanlış alarm SAKLANAN parçada ölçülür (dürüst, taze-veri tahmini).
-    # Not: canlıda arızalar 4-6 ardışık okuma sürer (simulator değişikliği);
-    # tek okumada %60-70 yakalama, olay bazında pratikte ~%100 demektir.
-    s_n = apply_calibration(model, scaler, calib, normal_saklanan)
-    s_a = apply_calibration(model, scaler, calib, anom)
-    bundle["kabul"] = {
-        "recall_tek_okuma": float((s_a >= 0.6).mean()),
-        "yanlis_alarm":     float((s_n >= 0.6).mean()),
-        "normal_ort":       float(s_n.mean()),
-        "anomali_ort":      float(s_a.mean()),
-    }
-    return bundle
-
-
-def train_isolation_forest():
-    print("── Isolation Forest (ekipman başına) eğitiliyor ──")
-    from data.simulator import EQUIPMENT_PROFILES, generate_training_data
-    print(f"  Kaggle arıza oranı (eğitimdeki anomali payı): %{_kaggle_failure_rate()*100:.1f}")
-
-    np.random.seed(42)   # veri üretimi deterministik → retrain'ler kararlı,
-    #                      demo modeli seed şansına bağlı kalmaz
-    df_pool = generate_training_data(n_samples=12000)  # tüm ekipmanlar tek havuz
-    for eq_id in EQUIPMENT_PROFILES:
-        b = train_one_equipment(eq_id, df_pool=df_pool)
-        k = b["kabul"]
-        print(f"  {eq_id:12s} tek-okuma recall=%{k['recall_tek_okuma']*100:5.1f}  "
-              f"yanlış_alarm=%{k['yanlis_alarm']*100:4.2f}  "
-              f"normal_ort={k['normal_ort']:.2f}  anomali_ort={k['anomali_ort']:.2f}")
-    print(f"  Modeller kaydedildi → {IF_BUNDLE_TMPL.format(eq='<ekipman>')}")
-
-
-# ─────────────────────────────────────────────
-# 2. LSTM
-# ─────────────────────────────────────────────
-
-SEQ_LEN    = 20
-INPUT_SIZE = 5
-HIDDEN     = 64
-LAYERS     = 2
-EPOCHS     = 50
-
-
-class LSTMModel(nn.Module):
-    def __init__(self):
+# ═════════════════════════════════════════════════════════════════
+# Modeller
+# ═════════════════════════════════════════════════════════════════
+class RULNet(nn.Module):
+    def __init__(self, in_dim: int, hidden: int = 64):
         super().__init__()
-        self.lstm = nn.LSTM(INPUT_SIZE, HIDDEN, LAYERS,
-                            batch_first=True, dropout=0.2)
-        self.fc   = nn.Linear(HIDDEN, INPUT_SIZE)
+        self.lstm = nn.LSTM(in_dim, hidden, 2, batch_first=True, dropout=0.2)
+        self.rul = nn.Sequential(nn.Linear(hidden, 32), nn.ReLU(), nn.Linear(32, 1))
+        self.cls = nn.Sequential(nn.Linear(hidden, 32), nn.ReLU(), nn.Linear(32, N_COMP + 1))
 
     def forward(self, x):
-        out, _ = self.lstm(x)
-        return self.fc(out[:, -1, :])
+        h = self.lstm(x)[0][:, -1]
+        return torch.sigmoid(self.rul(h)).squeeze(-1), self.cls(h)
 
 
-def _make_sequences(data: np.ndarray):
-    X, y = [], []
-    for i in range(len(data) - SEQ_LEN):
-        X.append(data[i : i + SEQ_LEN])
-        y.append(data[i + SEQ_LEN])
-    return np.array(X), np.array(y)
-
-
-LSTM_SCALER_PATH = "ml/lstm_scaler.pkl"
-BATCH_SIZE = 128
-
-
-def train_lstm():
-    print("\n── LSTM eğitiliyor (zaman-sıralı simülatör verisi) ──")
-    # Neden yenilendi (Adım 5)?
-    #   Eski hali: generate_training_data'nın KARIŞIK (birbiriyle ilgisiz,
-    #   rastgele sıralı) örneklerini zaman serisiymiş gibi dilimliyordu —
-    #   pencereler farklı makinelerin okumalarını bile karıştırıyordu.
-    #   Böyle eğitilen model trend öğrenemez, ortalamayı söyler.
-    #   Yeni hali: generate_historical ile GERÇEK ZAMAN SIRALI 24 saatlik
-    #   akış üretilir; pencereler her makinenin KENDİ zaman çizgisinde
-    #   dilimlenir (makine sınırı asla aşılmaz). Model artık "bu 20 okumalık
-    #   filmden sonraki kare ne olur?" sorusunu gerçekten öğreniyor.
-
-    from data.simulator import generate_historical
-    df = generate_historical(hours=24, interval_seconds=30)   # makine başına 2880 sıralı okuma
-
-    features = ["temperature", "vibration", "pressure", "current", "speed"]
-
-    scaler = StandardScaler()
-    scaler.fit(df[features].values)
-    with open(LSTM_SCALER_PATH, "wb") as f:
-        pickle.dump(scaler, f)
-    print(f"  LSTM scaler kaydedildi: {LSTM_SCALER_PATH}")
-
-    # Pencereleri makine bazında, zaman sırasına göre dilimle
-    X_parts, y_parts = [], []
-    for eq_id, grp in df.sort_values("time").groupby("equipment_id"):
-        seq_scaled = scaler.transform(grp[features].values)
-        X_eq, y_eq = _make_sequences(seq_scaled)
-        if len(X_eq):
-            X_parts.append(X_eq); y_parts.append(y_eq)
-    X_all = np.concatenate(X_parts)
-    y_all = np.concatenate(y_parts)
-    print(f"  Dizi sayısı: {len(X_all)} (makine sınırı aşılmadan)")
-
-    # CPU kullan (MPS için bellek taşması önlenir)
-    device = torch.device("cpu")
-    print(f"  Cihaz: {device}")
-
-    X_t = torch.tensor(X_all, dtype=torch.float32)
-    y_t = torch.tensor(y_all, dtype=torch.float32)
-
-    dataset   = torch.utils.data.TensorDataset(X_t, y_t)
-    loader    = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-    model     = LSTMModel().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.MSELoss()
-
-    model.train()
-    for epoch in range(1, EPOCHS + 1):
-        epoch_loss = 0.0
-        for xb, yb in loader:
-            optimizer.zero_grad()
-            loss = criterion(model(xb), yb)
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-        if epoch % 10 == 0:
-            print(f"  Epoch {epoch:3d}/{EPOCHS} — Loss: {epoch_loss/len(loader):.5f}")
-
-    torch.save(model.state_dict(), LSTM_PATH)
-    print(f"  Model kaydedildi: {LSTM_PATH}")
-
-
-# ─────────────────────────────────────────────
-# 3. RUL (Kalan Faydalı Ömür) — LSTM Regresör
-# ─────────────────────────────────────────────
-
-RUL_PATH        = "ml/rul_lstm.pt"
-RUL_SCALER_PATH = "ml/rul_scaler.pkl"
-RUL_MAX_HOURS   = 100.0   # etiket normalizasyonu için tavan
-RUL_EPOCHS      = 40
-
-
-class RULModel(nn.Module):
-    """Sensör penceresi → kalan faydalı ömür (normalize 0-1)."""
-    def __init__(self):
+class ForecastNet(nn.Module):
+    def __init__(self, n_feat: int = len(FC_FEATURES), hidden: int = 64):
         super().__init__()
-        self.lstm = nn.LSTM(INPUT_SIZE, HIDDEN, LAYERS,
-                            batch_first=True, dropout=0.2)
-        self.fc   = nn.Linear(HIDDEN, 1)
+        self.lstm = nn.LSTM(n_feat, hidden, 2, batch_first=True, dropout=0.1)
+        self.fc = nn.Linear(hidden, n_feat)
 
     def forward(self, x):
-        out, _ = self.lstm(x)
-        return torch.sigmoid(self.fc(out[:, -1, :]))   # [0,1]
+        return self.fc(self.lstm(x)[0][:, -1])   # x_son'a göre değişim (ölçekli)
 
 
-def _rul_sequences(run: np.ndarray, rul: np.ndarray):
-    """Tek bir run-to-failure trajektorisinden (pencere → RUL) çiftleri."""
-    X, y = [], []
-    for i in range(len(run) - SEQ_LEN):
-        X.append(run[i : i + SEQ_LEN])
-        y.append(rul[i + SEQ_LEN - 1])   # pencere sonundaki RUL
-    return X, y
+# ═════════════════════════════════════════════════════════════════
+# Yardımcılar
+# ═════════════════════════════════════════════════════════════════
+def flat(a: np.ndarray, valid: np.ndarray | None = None) -> np.ndarray:
+    if valid is None:
+        return a.reshape(-1, a.shape[-1])
+    return a[valid]
 
 
-def train_rul():
-    print("\n── RUL (Kalan Faydalı Ömür) modeli eğitiliyor ──")
-    from data.simulator import generate_rul_dataset
+def calibrate(raw_healthy: np.ndarray, raw_anom: np.ndarray) -> dict:
+    """Ham IF skorunu (x = −score_samples; büyük = anormal) 0-1'e haritalar.
+    Çapalar: sağlıklı medyan → 0.10, sağlıklı %99 → 0.50, sağlıklı %99.9 → 0.60
+    (yani 0.6 = 'binde bir sağlıklı okumanın aştığı seviye'), belirgin hasar
+    (D ≥ 0.5) medyanı → 0.85."""
+    q = np.quantile(raw_healthy, [0.5, 0.99, 0.999])
+    x4 = max(float(np.median(raw_anom)), q[2] + 1e-6) if len(raw_anom) else q[2] + 1.0
+    x5 = x4 + 2 * (x4 - q[2])
+    return {"xp": [float(q[0]), float(q[1]), float(q[2]), x4, x5],
+            "fp": [0.10, 0.50, 0.60, 0.85, 0.98]}
 
-    df = generate_rul_dataset(runs_per_equipment=40)
-    features = ["temperature", "vibration", "pressure", "current", "speed"]
 
-    # Tüm run'lar üzerinde tek scaler
-    scaler = StandardScaler()
-    scaler.fit(df[features].values)
-    with open(RUL_SCALER_PATH, "wb") as f:
-        pickle.dump(scaler, f)
-    print(f"  RUL scaler kaydedildi: {RUL_SCALER_PATH}")
+def apply_calibration(raw: np.ndarray, calib: dict) -> np.ndarray:
+    return np.clip(np.interp(raw, calib["xp"], calib["fp"]), 0.0, 1.0)
 
-    # Her bağımsız run'ı run_id'ye göre ayrı işle (pencereler run sınırını aşmasın).
-    X_all, y_all = [], []
-    feat_scaled = scaler.transform(df[features].values)
-    rul_vals = df["rul_hours"].values
-    n_runs = 0
-    for _, idx in df.groupby("run_id").groups.items():
-        idx = list(idx)
-        run = feat_scaled[idx]
-        rul = np.clip(rul_vals[idx] / RUL_MAX_HOURS, 0, 1)
-        if len(run) > SEQ_LEN:
-            xs, ys = _rul_sequences(run, rul)
-            X_all.extend(xs); y_all.extend(ys)
-            n_runs += 1
 
-    X_all = np.array(X_all, dtype=np.float32)
-    y_all = np.array(y_all, dtype=np.float32).reshape(-1, 1)
-    print(f"  Eğitim penceresi: {len(X_all)} (run sayısı: {n_runs})")
+def rul_windows(snaps: np.ndarray, rul: np.ndarray, comp: np.ndarray, is_truck: float):
+    """Tek birimin özet dizisinden (pencere, etiket) çiftleri; sol dolgu = ilk özet."""
+    X, yr, yc = [], [], []
+    K = len(snaps)
+    for k in range(RUL_MIN_SNAPS - 1, K):
+        w = snaps[max(0, k - RUL_SEQ + 1):k + 1]
+        if len(w) < RUL_SEQ:
+            w = np.concatenate([np.repeat(w[:1], RUL_SEQ - len(w), 0), w])
+        X.append(np.concatenate([w, np.full((RUL_SEQ, 1), is_truck)], 1))
+        r = min(float(rul[k]), RUL_CAP)
+        yr.append(r / RUL_CAP)
+        yc.append(int(comp[k]) if rul[k] < RUL_CAP else HEALTHY_CLASS)
+    return X, yr, yc
 
-    device = torch.device("cpu")
-    X_t = torch.tensor(X_all)
-    y_t = torch.tensor(y_all)
-    loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(X_t, y_t),
-        batch_size=BATCH_SIZE, shuffle=True,
-    )
 
-    model     = RULModel().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.MSELoss()
+def build_rul_dataset(monitors: dict, n_units: int, seed: int, duration_s: float = 3600.0):
+    """Her tip için run-to-failure filosu → RUL pencereleri (birim kimliğiyle)."""
+    X, yr, yc, uid = [], [], [], []
+    base = 0
+    for t_i, (etype, eq) in enumerate(TYPE_EQ.items()):
+        prof = EQUIPMENT_PROFILES[eq]
+        mon = monitors[etype]
+        s = simulate_streams(eq, n_units, duration_s, seed=seed + t_i, mode="run_to_failure")
+        z, ctx = residuals_batch(mon["nbm"], s["X"], SENSORS, prof, DT)
+        snaps = snapshots_batch(z, ctx, s["op_hours"], s["valid"])
+        for u, (sn, ends) in enumerate(snaps):
+            if len(sn) < RUL_MIN_SNAPS:
+                continue
+            a, b, c = rul_windows(sn, s["true_rul"][u, ends], s["true_comp"][u, ends],
+                                  float(etype == "truck"))
+            X += a; yr += b; yc += c; uid += [base + u] * len(a)
+        base += n_units
+    return (np.array(X, np.float32), np.array(yr, np.float32),
+            np.array(yc, np.int64), np.array(uid))
 
-    model.train()
-    for epoch in range(1, RUL_EPOCHS + 1):
-        ep = 0.0
-        for xb, yb in loader:
-            optimizer.zero_grad()
-            loss = criterion(model(xb), yb)
+
+# ═════════════════════════════════════════════════════════════════
+# 1-2) NBM + Isolation Forest (tip başına)
+# ═════════════════════════════════════════════════════════════════
+def train_monitor(etype: str, seed: int = 0) -> dict:
+    from sklearn.ensemble import IsolationForest
+    eq = TYPE_EQ[etype]
+    prof = EQUIPMENT_PROFILES[eq]
+    t0 = time.time()
+    h = simulate_streams(eq, 240, 3600, seed=seed, mode="healthy")
+    ctx = stream_context_batch(h["X"], SENSORS, prof, DT)
+    Y = targets_batch(h["X"], SENSORS)
+    n = ctx.shape[0]
+    A, B1, B2 = slice(0, n // 2), slice(n // 2, 3 * n // 4), slice(3 * n // 4, n)
+
+    nbm = NormalBehaviourModel().fit(flat(ctx[A]), flat(Y[A]), flat(ctx[B1]), flat(Y[B1]))
+    # σ'yı devreye alma düzeltmesinden SONRAKİ artıklara göre yeniden ölçekle
+    # (makineye özgü sabit sapma çıkarıldıktan sonra kalan gerçek belirsizlik).
+    zb = flat(baseline_correct_batch(nbm.z(flat(ctx[B1]), flat(Y[B1])).reshape(Y[B1].shape)))
+    nbm.sigma = nbm.sigma * np.maximum(1.4826 * np.median(np.abs(zb - np.median(zb, 0)), 0), 1e-3)
+    zs = lambda c, y: smooth_z_batch(baseline_correct_batch(
+        nbm.z(c.reshape(-1, N_CTX), y.reshape(-1, len(TARGETS))).reshape(y.shape)), DT)
+    z_b1, z_b2 = zs(ctx[B1], Y[B1]), zs(ctx[B2], Y[B2])
+
+    iforest = IsolationForest(n_estimators=300, max_samples=2048, contamination="auto",
+                              random_state=seed).fit(flat(z_b1))
+
+    # Kalibrasyon: sağlıklı (görülmemiş B2) + belirgin hasarlı run-to-failure okumaları
+    r = simulate_streams(eq, 80, 3600, seed=seed + 50, mode="run_to_failure")
+    rc = stream_context_batch(r["X"], SENSORS, prof, DT)
+    ry = targets_batch(r["X"], SENSORS)
+    rz = zs(rc, ry)
+    anom = rz[r["valid"] & (r["max_damage"] >= 0.5)]
+    calib = calibrate(-iforest.score_samples(flat(z_b2)), -iforest.score_samples(anom))
+    # İkinci dedektör: sensör başına artık kontrol limiti (max|z|). IF, TEK bir
+    # sensördeki aşırı sapmada (ör. soğutma arızasında yalnız sıcaklık) doyar;
+    # max|z| bunu yakalar. Aynı sağlıklı çapalarla kalibre edilir.
+    calib_z = calibrate(np.abs(flat(z_b2)).max(1), np.abs(anom).max(1))
+
+    s_h = np.maximum(apply_calibration(-iforest.score_samples(flat(z_b2)), calib),
+                     apply_calibration(np.abs(flat(z_b2)).max(1), calib_z))
+    print(f"  [{etype}] NBM σ = " + ", ".join(f"{k}:{s:.2f}" for k, s in zip(TARGETS, nbm.sigma))
+          + f"   sağlıklı okuma ≥0.6: %{(s_h >= 0.6).mean()*100:.2f}   ({time.time()-t0:.0f} sn)")
+    return {"nbm": nbm, "iforest": iforest, "calib": calib, "calib_z": calib_z, "type": etype,
+            "profile_eq": eq, "dt": DT}
+
+
+# ═════════════════════════════════════════════════════════════════
+# 3) RUL LSTM
+# ═════════════════════════════════════════════════════════════════
+def train_rul(monitors: dict, seed: int = 0, epochs: int = 40):
+    t0 = time.time()
+    X, yr, yc, uid = build_rul_dataset(monitors, n_units=700, seed=seed + 100)
+    units = np.unique(uid)
+    rng = np.random.default_rng(seed)
+    val_units = set(rng.choice(units, len(units) // 5, replace=False).tolist())
+    vm = np.array([u in val_units for u in uid])
+
+    mu = X[~vm].reshape(-1, X.shape[-1]).mean(0)
+    sd = X[~vm].reshape(-1, X.shape[-1]).std(0) + 1e-6
+    mu[-1], sd[-1] = 0.0, 1.0                                  # tip bayrağı ölçeklenmez
+    Xn = np.clip((X - mu) / sd, -10, 10).astype(np.float32)
+    print(f"  RUL pencereleri: eğitim {int((~vm).sum())}  doğrulama {int(vm.sum())}  "
+          f"(birim: {len(units)})")
+
+    model = RULNet(Xn.shape[-1])
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5, patience=3)
+    tr = torch.utils.data.TensorDataset(torch.tensor(Xn[~vm]), torch.tensor(yr[~vm]),
+                                        torch.tensor(yc[~vm]))
+    dl = torch.utils.data.DataLoader(tr, batch_size=256, shuffle=True)
+    Xv, yrv, ycv = torch.tensor(Xn[vm]), torch.tensor(yr[vm]), torch.tensor(yc[vm])
+    best, best_state, bad = 1e9, None, 0
+    for ep in range(1, epochs + 1):
+        model.train()
+        for xb, rb, cb in dl:
+            opt.zero_grad()
+            pr, pc = model(xb)
+            loss = nn.functional.mse_loss(pr, rb) + 0.05 * nn.functional.cross_entropy(pc, cb)
             loss.backward()
-            optimizer.step()
-            ep += loss.item()
-        if epoch % 10 == 0:
-            # MAE'yi saat cinsine çevir
-            mae_h = (ep / len(loader)) ** 0.5 * RUL_MAX_HOURS
-            print(f"  Epoch {epoch:3d}/{RUL_EPOCHS} — Loss: {ep/len(loader):.5f}  (~RMSE {mae_h:.1f} saat)")
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+        model.eval()
+        with torch.no_grad():
+            pr, pc = model(Xv)
+            rmse = float(torch.sqrt(((pr - yrv) ** 2).mean())) * RUL_CAP
+            acc = float((pc.argmax(1) == ycv).float().mean())
+        sched.step(rmse)
+        if rmse < best - 0.05:
+            best, best_state, bad = rmse, {k: v.clone() for k, v in model.state_dict().items()}, 0
+        else:
+            bad += 1
+        if ep % 5 == 0 or bad == 0:
+            print(f"  epoch {ep:3d}  doğrulama RMSE {rmse:6.2f} sa   bileşen doğruluğu %{acc*100:4.1f}")
+        if bad >= 8:
+            break
+    model.load_state_dict(best_state)
+    torch.save(model.state_dict(), f"{ART}/rul_lstm.pt")
+    with open(f"{ART}/rul_meta.pkl", "wb") as f:
+        pickle.dump({"mu": mu, "sd": sd, "cap": RUL_CAP, "seq": RUL_SEQ,
+                     "min_snaps": RUL_MIN_SNAPS, "components": COMPONENT_NAMES,
+                     "in_dim": int(Xn.shape[-1]), "val_rmse": best}, f)
+    print(f"  RUL modeli kaydedildi (en iyi doğrulama RMSE {best:.2f} sa, {time.time()-t0:.0f} sn)")
 
-    torch.save(model.state_dict(), RUL_PATH)
-    print(f"  Model kaydedildi: {RUL_PATH}")
+
+# ═════════════════════════════════════════════════════════════════
+# 4) Tahminci LSTM (tip başına)
+# ═════════════════════════════════════════════════════════════════
+def forecast_windows(X: np.ndarray, valid: np.ndarray | None, stride: int = 2):
+    idx = [SENSORS.index(k) for k in FC_FEATURES]
+    xs, ys = [], []
+    for u in range(X.shape[0]):
+        T = X.shape[1] if valid is None else int(valid[u].sum())
+        a = X[u, :T][:, idx]
+        for t in range(FC_SEQ, T - FC_HORIZON + 1, stride):
+            xs.append(a[t - FC_SEQ:t])
+            ys.append(a[t + FC_HORIZON - 1])
+    return np.array(xs, np.float32), np.array(ys, np.float32)
 
 
-# ─────────────────────────────────────────────
+def train_forecaster(etype: str, seed: int = 0, epochs: int = 25):
+    t0 = time.time()
+    eq = TYPE_EQ[etype]
+    h = simulate_streams(eq, 120, 2400, seed=seed + 200, mode="healthy")
+    r = simulate_streams(eq, 80, 3600, seed=seed + 300, mode="run_to_failure")
+    xa, ya = forecast_windows(h["X"], None)
+    xb, yb = forecast_windows(r["X"], r["valid"], stride=4)
+    X, Y = np.concatenate([xa, xb]), np.concatenate([ya, yb])
+    mu, sd = X.reshape(-1, X.shape[-1]).mean(0), X.reshape(-1, X.shape[-1]).std(0) + 1e-6
+    Xn = (X - mu) / sd
+    dY = (Y - X[:, -1]) / sd                     # hedef: son okumaya göre değişim
+    n = len(Xn)
+    perm = np.random.default_rng(seed).permutation(n)
+    tr, va = perm[: int(n * 0.9)], perm[int(n * 0.9):]
+    model = ForecastNet()
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    dl = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(
+        torch.tensor(Xn[tr]), torch.tensor(dY[tr])), batch_size=512, shuffle=True)
+    Xv, Yv = torch.tensor(Xn[va]), torch.tensor(dY[va])
+    best, best_state = 1e9, None
+    for ep in range(1, epochs + 1):
+        model.train()
+        for xb_, yb_ in dl:
+            opt.zero_grad()
+            loss = nn.functional.mse_loss(model(xb_), yb_)
+            loss.backward()
+            opt.step()
+        model.eval()
+        with torch.no_grad():
+            v = float(nn.functional.mse_loss(model(Xv), Yv))
+        if v < best:
+            best, best_state = v, {k: t.clone() for k, t in model.state_dict().items()}
+    model.load_state_dict(best_state)
+    torch.save(model.state_dict(), f"{ART}/forecast_{etype}.pt")
+    with open(f"{ART}/forecast_{etype}_meta.pkl", "wb") as f:
+        pickle.dump({"mu": mu, "sd": sd, "features": FC_FEATURES, "seq": FC_SEQ,
+                     "horizon": FC_HORIZON, "dt": DT}, f)
+    print(f"  [{etype}] tahminci kaydedildi (doğrulama MSE {best:.4f}, {time.time()-t0:.0f} sn)")
+
+
+def main():
+    os.makedirs(ART, exist_ok=True)
+    np.random.seed(0)
+    torch.manual_seed(0)
+    print("── 1-2) Normal davranış modeli + Isolation Forest ──")
+    monitors = {}
+    for i, etype in enumerate(TYPE_EQ):
+        monitors[etype] = train_monitor(etype, seed=10 * i)
+        with open(f"{ART}/monitor_{etype}.pkl", "wb") as f:
+            pickle.dump(monitors[etype], f)
+    print("\n── 3) RUL LSTM (kalan ömür + bileşen) ──")
+    train_rul(monitors)
+    print("\n── 4) Tahminci LSTM (30 sn ileri) ──")
+    for i, etype in enumerate(TYPE_EQ):
+        train_forecaster(etype, seed=i)
+    print("\nEğitim tamamlandı → ml/artifacts/")
+
 
 if __name__ == "__main__":
-    train_isolation_forest()
-    train_lstm()
-    train_rul()
-    print("\nEğitim tamamlandı.")
+    main()

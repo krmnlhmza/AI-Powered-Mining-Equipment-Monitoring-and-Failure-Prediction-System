@@ -1,79 +1,87 @@
 """
-Dijital İkiz Simülatörü — Sandvik LH517i / TH551i için gerçekçi sensör üreteci
-─────────────────────────────────────────────────────────────────────────────
-Sahadaki bir makineyi sadece "rastgele dağılım + bazen spike" diye değil,
-gerçek bir madencilik operasyon döngüsü olarak modelliyoruz.
+Dijital İkiz Simülatörü v2 — Sandvik LH517i / TH551i
+═════════════════════════════════════════════════════
 
-3 ana mekanizma birleştirilmiştir:
+v1'den farkı (neden yeniden yazıldı?)
+─────────────────────────────────────
+v1'de her okuma "fazın sabit değeri + bağımsız gürültü" idi: makinenin bir
+önceki saniyesiyle bir sonraki arasında fiziksel bağ yoktu, arızalar 3-4
+okumalık basamak olarak enjekte edilip kayboluyordu, yıpranma ise canlı
+akışta görünmeyecek kadar yavaştı. Böyle bir veriden LSTM'in öğrenebileceği
+bir dinamik yoktu.
 
-  1) DURUM MAKİNESİ (state machine)
-     Her makine kendi tipinin operasyon döngüsünde dolaşır:
-       • LH517i (LHD yükleyici):  idle → yığına yaklaş → kepçe doldur →
-                                  yüklü taşı → boşaltma noktası → boşalt →
-                                  boş dön → (döngü başa)
-       • TH551i (kamyon):         beklemede → yüklenme → yüklü hızlanma →
-                                  yokuş yukarı yüklü → boşaltma yaklaşma →
-                                  boşalt → yokuş aşağı boş → boş hızlanma
+v2 üç fiziksel katmandan oluşur ve CANLI akış ile EĞİTİM verisi AYNI motoru
+kullanır (eğitim/servis uyumsuzluğu yok):
 
-  2) SENSÖR KORELASYONLARI
-     Sensörler birbirinden bağımsız değil. Yük artarsa sıcaklık + akım +
-     titreşim birlikte artar; hidrolik aksiyonda (kepçe kaldırma, boşaltma)
-     basınç spike yapar; yokuş aşağı = serin + hızlı + düşük tork.
+ 1) OPERASYON DÖNGÜSÜ (saniye ölçeği)
+    LHD / kamyon döngüsü fazlar halinde ilerler; faz süreleri her döngüde
+    ±%20 değişir. Faz yalnız "komut"u (gaz, yük, hedef hız, hidrolik) belirler;
+    sensörler bu komuta birinci mertebe gecikmeyle (zaman sabitleriyle) yaklaşır.
 
-  3) ZAMAN VE YIPRANMA
-     Çalışma saatleri biriktikçe `wear_level` (0.0 → 1.0) artar; yıpranmış
-     rulmanlar titreşim ve sıcaklık tabanını yukarı kaydırır. Yüksek stres
-     (uzun ısı, uzun titreşim) yıpranmayı hızlandırır.
+ 2) FİZİKSEL DİNAMİK (saniye ölçeği)
+    • Sıcaklık: toplu ısıl kapasite modeli  dT/dt = (T_denge - T) / τ,
+      τ ≈ 4 dk. Isı üretimi yakıt/yükle, soğutma verimi radyatör durumuyla
+      belirlenir. Yokuşta sıcaklık bir anda zıplamaz, dakikalar içinde tırmanır.
+    • Devir, hız, tork, akım, basınç: kendi zaman sabitleriyle komutu izler.
+    • Titreşim: motor devri + yük + zemin pürüzlülüğü (Ornstein-Uhlenbeck
+      süreci) + bileşen hasarından gelen katkılar.
+    • Ölçüm gürültüsü: sensör başına beyaz gürültü.
 
-Geriye dönük uyumluluk: eski API çağrıları (generate_reading,
-generate_training_data, generate_degradation_run, vb.) korunmuştur.
+ 3) BİLEŞEN HASARI (çalışma-saati ölçeği)
+    8 bileşenin her biri için hasar D ∈ [0, 1]:
+      • Kuluçka: bileşen bir süre sağlam kalır; hasarın başlama anı
+        Weibull dağılımından çekilir (bileşen başına ölçek η).
+      • Büyüme: başladıktan sonra  dD/dh = g · s(t) · (D + 0.05)
+        (yük/strese bağlı, kendini hızlandıran büyüme — çatlak/aşınma
+        literatüründeki üstel ilerlemenin basit biçimi). g makine başına
+        log-normal → her makine farklı hızda bozulur.
+      • D = 1 → bileşen arızalandı (tanım gereği; sensör eşiğinden bağımsız).
+    Hasar sensörlere fiziksel kanaldan yansır: rulman → titreşim (devirle
+    büyür), pompa → basınç kaybı, radyatör → soğutma verimi düşer, enjektör →
+    yakıt artar / tork düşer / ateşleme kaçırma titreşimi ...
+
+İKİ SAAT: Hasar saati, fiziksel saate göre AGING_ACCEL kat hızlı akar
+(varsayılan 600: 1 gerçek saniye = 10 dk çalışma). Böylece canlı demoda
+yüzlerce saatlik bir bozulma ~15 dakikada izlenebilir. Okumalardaki
+`op_hours` (motor saat sayacı — gerçek makinelerde de standart bir
+telemetri alanıdır) hasar saatini taşır. Değer SIM_AGING_ACCEL ortam
+değişkeniyle değiştirilebilir; 1 = gerçek zaman.
+
+Gerçek RUL (kalan faydalı ömür) simülatörde BİLİNİR: hasar modelinden
+analitik olarak hesaplanır. Bu, modellerin dürüstçe ölçülebilmesini sağlar
+(`ground_truth()`); modellere girdi olarak VERİLMEZ.
 """
+
+from __future__ import annotations
+
+import copy
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass, field
-from typing import Dict, Optional, List, Tuple
-
 
 # ═════════════════════════════════════════════════════════════════════════
-# 1) EKİPMAN PROFİLLERİ — Sandvik teknik dokümantasyonu
+# 1) EKİPMAN PROFİLLERİ — Sandvik teknik dokümantasyonu (normal çalışma bandı)
 # ═════════════════════════════════════════════════════════════════════════
+_LOADER = {
+    "type": "loader", "model": "Sandvik LH517i",
+    "temperature": (72, 88),    # °C — motor/hidrolik yağ
+    "vibration":   (0.8, 4.5),  # mm/s RMS
+    "pressure":    (250, 280),  # bar — hidrolik
+    "current":     (150, 195),  # A — sürücü motor
+    "speed":       (1.0, 7.0),  # km/h
+    "gas":         (0.1, 0.6),  # % CH4
+    "rpm":         (800, 2100),
+    "torque":      (300, 2300),
+    "fuel":        (8, 52),
+}
 EQUIPMENT_PROFILES: Dict[str, dict] = {
-    # ── Sandvik LH517i — Yer Altı LHD Yükleyici (Volvo TAD1342VE, 354 kW)
-    "LH517i_001": {
-        "type":  "loader",
-        "model": "Sandvik LH517i",
-        "label": "LH517i #1 — Yükleyici",
-        "temperature": (72, 88),    # °C — motor/hidrolik
-        "vibration":   (0.8, 4.5),  # mm/s RMS
-        "pressure":    (250, 280),  # bar — hidrolik
-        "current":     (150, 195),  # A — sürücü motor
-        "speed":       (1.0, 7.0),  # km/h
-        "gas":         (0.1, 0.6),  # % CH4
-        "rpm":         (800, 2100),   # devir — rölanti/max (Volvo TAD1342VE)
-        "torque":      (300, 2300),   # Nm — tepe tork
-        "fuel":        (8, 52),       # L/sa — rölanti/tam yük
-    },
-    "LH517i_002": {
-        "type":  "loader",
-        "model": "Sandvik LH517i",
-        "label": "LH517i #2 — Yükleyici",
-        "temperature": (72, 88),
-        "vibration":   (0.8, 4.5),
-        "pressure":    (250, 280),
-        "current":     (150, 195),
-        "speed":       (1.0, 7.0),
-        "gas":         (0.1, 0.6),
-        "rpm":         (800, 2100),
-        "torque":      (300, 2300),
-        "fuel":        (8, 52),
-    },
-    # ── Sandvik TH551i — Yer Altı Kamyon (411 kW, 51 ton kapasite)
+    "LH517i_001": {**_LOADER, "label": "LH517i #1 — Yükleyici"},
+    "LH517i_002": {**_LOADER, "label": "LH517i #2 — Yükleyici"},
     "TH551i_001": {
-        "type":  "truck",
-        "model": "Sandvik TH551i",
-        "label": "TH551i #1 — Kamyon",
+        "type": "truck", "model": "Sandvik TH551i", "label": "TH551i #1 — Kamyon",
         "temperature": (75, 92),
         "vibration":   (1.0, 5.0),
         "pressure":    (200, 250),
@@ -81,24 +89,27 @@ EQUIPMENT_PROFILES: Dict[str, dict] = {
         "speed":       (2.0, 30.0),
         "gas":         (0.1, 0.6),
         "rpm":         (800, 2100),
-        "torque":      (400, 2600),   # 411 kW motor — daha yüksek tepe tork
+        "torque":      (400, 2600),
         "fuel":        (10, 62),
     },
 }
 
+SENSORS = ["temperature", "vibration", "pressure", "current", "speed",
+           "rpm", "torque", "fuel", "gas"]
+
+AGING_ACCEL = float(os.getenv("SIM_AGING_ACCEL", "600"))
+NATURAL_FAULTS = os.getenv("SIM_NATURAL_FAULTS", "1") != "0"
+T_AMBIENT = 28.0        # °C — yer altı ortam sıcaklığı
+TAU_TEMP = 240.0        # s — motor/yağ ısıl zaman sabiti
+FAIL_DOWNTIME_S = 45.0  # s — arıza sonrası makinenin durduğu süre (canlı)
 
 # ═════════════════════════════════════════════════════════════════════════
-# 2) METAN (CH4) — İSG Güvenlik Eşikleri
+# 2) METAN (CH4) — İSG eşikleri (ML'den bağımsız, mutlak)
 # ═════════════════════════════════════════════════════════════════════════
-METHANE_LIMITS = {
-    "uyari":   1.0,   # %1.0 üzeri: uyarı, havalandırma kontrol
-    "tehlike": 1.5,   # %1.5 üzeri: elektrikli ekipmanı durdur
-    "kritik":  2.0,   # %2.0 üzeri: TAHLİYE (patlama aralığı %5-15)
-}
+METHANE_LIMITS = {"uyari": 1.0, "tehlike": 1.5, "kritik": 2.0}
 
 
 def gas_status(gas_pct: float) -> dict:
-    """Metan seviyesini İSG durumuna sınıflandırır."""
     if gas_pct >= METHANE_LIMITS["kritik"]:
         return {"seviye": "KRİTİK", "renk": "kirmizi",
                 "mesaj": f"TAHLİYE — Metan %{gas_pct:.2f} (patlama riski). Tüm personel tahliye edilmeli."}
@@ -108,35 +119,20 @@ def gas_status(gas_pct: float) -> dict:
     if gas_pct >= METHANE_LIMITS["uyari"]:
         return {"seviye": "UYARI", "renk": "sari",
                 "mesaj": f"Metan %{gas_pct:.2f} — Eşik aşıldı, havalandırma kontrol edilmeli."}
-    return {"seviye": "NORMAL", "renk": "yesil",
-            "mesaj": f"Metan %{gas_pct:.2f} — Güvenli aralık."}
+    return {"seviye": "NORMAL", "renk": "yesil", "mesaj": f"Metan %{gas_pct:.2f} — Güvenli aralık."}
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 3) DURUM MAKİNESİ — Operasyon döngüsü
+# 3) OPERASYON DÖNGÜSÜ
 # ═════════════════════════════════════════════════════════════════════════
-# Her faz: (faz adı, süresi saniye). Faz bittiğinde sıradakine geçilir,
-# döngü sonunda başa döner. Saniye değerleri Sandvik OEM cycle time
-# raporlarındaki tipik yer altı LHD/Kamyon değerleridir.
 LHD_CYCLE: List[Tuple[str, int]] = [
-    ("idle",              5),    # rölantide bekliyor
-    ("approach_pile",     8),    # yığına yaklaşıyor
-    ("picking_up",       10),    # kepçeyle dolduruyor — hidrolik spike
-    ("hauling_loaded",   30),    # yüklü taşıyor — max stres
-    ("approach_dump",    10),    # boşaltma noktasına yavaşlıyor
-    ("dumping",           6),    # boşaltıyor — hidrolik spike
-    ("returning_empty",  25),    # boş dönüyor — hafif yük
+    ("idle", 5), ("approach_pile", 8), ("picking_up", 10), ("hauling_loaded", 30),
+    ("approach_dump", 10), ("dumping", 6), ("returning_empty", 25),
 ]
-
 TRUCK_CYCLE: List[Tuple[str, int]] = [
-    ("idle_waiting",       12),  # loader'ı bekliyor
-    ("getting_loaded",     20),  # üzerine malzeme dökülüyor — titreşim
-    ("accelerating_loaded",10),  # yüklü hızlanıyor — akım pik
-    ("climbing_loaded",    45),  # yokuş yukarı yüklü — max her şey
-    ("arriving_dump",      10),  # boşaltma noktasına yavaşlıyor
-    ("dumping",             6),  # boşaltıyor
-    ("descending_empty",   35),  # yokuş aşağı boş — rejeneratif fren, serin
-    ("accelerating_empty",  8),  # boş hızlanıyor
+    ("idle_waiting", 12), ("getting_loaded", 20), ("accelerating_loaded", 10),
+    ("climbing_loaded", 45), ("arriving_dump", 10), ("dumping", 6),
+    ("descending_empty", 35), ("accelerating_empty", 8),
 ]
 
 
@@ -144,649 +140,658 @@ def _cycle_for(eq_type: str) -> List[Tuple[str, int]]:
     return TRUCK_CYCLE if eq_type == "truck" else LHD_CYCLE
 
 
-# Faz başına davranış parametreleri:
-#   load          : 0.0 (boş) → 1.0 (tam yüklü)
-#   throttle      : motor yükü, gaz pedalı seviyesi (0-1)
-#   vibration_mult: titreşim çarpanı (1.0 = nominal)
-#   speed_mult    : profil hız aralığında çarpan (0=dur, 1=max)
-#   pressure_spike: True ise hidrolik basıncı geçici olarak max'ın üstüne
-#   cooling       : True ise sıcaklık aktif düşer (rejeneratif/serbest)
+# Faz komutları: load (0-1), throttle (0-1), vib (zemin/aksiyon çarpanı),
+# speed (hız bandında oran; 0 = dur), spike (hidrolik tepe), cooling (iniş)
 PHASE_PROFILES: Dict[str, dict] = {
-    # LHD fazları
-    "idle":               {"load": 0.0, "throttle": 0.10, "vibration_mult": 0.4, "speed_mult": 0.0},
-    "approach_pile":      {"load": 0.0, "throttle": 0.50, "vibration_mult": 0.7, "speed_mult": 0.7},
-    "picking_up":         {"load": 0.7, "throttle": 0.90, "vibration_mult": 1.6, "speed_mult": 0.2, "pressure_spike": True},
-    "hauling_loaded":     {"load": 1.0, "throttle": 0.85, "vibration_mult": 1.1, "speed_mult": 0.5},
-    "approach_dump":      {"load": 1.0, "throttle": 0.30, "vibration_mult": 0.8, "speed_mult": 0.4},
-    "dumping":            {"load": 0.4, "throttle": 0.60, "vibration_mult": 1.4, "speed_mult": 0.1, "pressure_spike": True},
-    "returning_empty":    {"load": 0.0, "throttle": 0.65, "vibration_mult": 0.6, "speed_mult": 0.9},
-    # Kamyon fazları
-    "idle_waiting":       {"load": 0.0, "throttle": 0.10, "vibration_mult": 0.35, "speed_mult": 0.0},
-    "getting_loaded":     {"load": 0.6, "throttle": 0.20, "vibration_mult": 1.5,  "speed_mult": 0.0},
-    "accelerating_loaded":{"load": 1.0, "throttle": 1.00, "vibration_mult": 1.2,  "speed_mult": 0.4},
-    "climbing_loaded":    {"load": 1.0, "throttle": 1.00, "vibration_mult": 1.0,  "speed_mult": 0.25},
-    "arriving_dump":      {"load": 1.0, "throttle": 0.30, "vibration_mult": 0.7,  "speed_mult": 0.5},
-    "descending_empty":   {"load": 0.0, "throttle": 0.30, "vibration_mult": 0.5,  "speed_mult": 0.85, "cooling": True},
-    "accelerating_empty": {"load": 0.0, "throttle": 0.80, "vibration_mult": 0.7,  "speed_mult": 0.9},
-    # (Senaryo 1) Manuel koşul — döngüde YOK: kötü/taşlık zeminde yüklü ilerleme.
-    # Fizik: bozuk zemin → yüksek titreşim; araç zorlanır → yüksek gaz/devir/yakıt
-    # ve sıcaklık; ama düşük hız. Bu bir NORMAL çalışma koşuludur (arıza değil),
-    # bu yüzden IF eğitimine dahil edilir — aksi halde IF bunu anomali sanır.
-    "kotu_yol":           {"load": 0.8, "throttle": 0.95, "vibration_mult": 1.9,  "speed_mult": 0.25},
+    "idle":                {"load": 0.0, "throttle": 0.10, "vibration_mult": 0.4,  "speed_mult": 0.0},
+    "approach_pile":       {"load": 0.0, "throttle": 0.50, "vibration_mult": 0.7,  "speed_mult": 0.7},
+    "picking_up":          {"load": 0.7, "throttle": 0.90, "vibration_mult": 1.6,  "speed_mult": 0.2, "pressure_spike": True},
+    "hauling_loaded":      {"load": 1.0, "throttle": 0.85, "vibration_mult": 1.1,  "speed_mult": 0.5},
+    "approach_dump":       {"load": 1.0, "throttle": 0.30, "vibration_mult": 0.8,  "speed_mult": 0.4},
+    "dumping":             {"load": 0.4, "throttle": 0.60, "vibration_mult": 1.4,  "speed_mult": 0.1, "pressure_spike": True},
+    "returning_empty":     {"load": 0.0, "throttle": 0.65, "vibration_mult": 0.6,  "speed_mult": 0.9},
+    "idle_waiting":        {"load": 0.0, "throttle": 0.10, "vibration_mult": 0.35, "speed_mult": 0.0},
+    "getting_loaded":      {"load": 0.6, "throttle": 0.20, "vibration_mult": 1.5,  "speed_mult": 0.0},
+    "accelerating_loaded": {"load": 1.0, "throttle": 1.00, "vibration_mult": 1.2,  "speed_mult": 0.4},
+    "climbing_loaded":     {"load": 1.0, "throttle": 1.00, "vibration_mult": 1.0,  "speed_mult": 0.25},
+    "arriving_dump":       {"load": 1.0, "throttle": 0.30, "vibration_mult": 0.7,  "speed_mult": 0.5},
+    "descending_empty":    {"load": 0.0, "throttle": 0.30, "vibration_mult": 0.5,  "speed_mult": 0.85, "cooling": True},
+    "accelerating_empty":  {"load": 0.0, "throttle": 0.80, "vibration_mult": 0.7,  "speed_mult": 0.9},
+    # Manuel koşul (döngüde yok): bozuk/taşlık zeminde yüklü ilerleme — NORMAL çalışma.
+    "kotu_yol":            {"load": 0.8, "throttle": 0.95, "vibration_mult": 1.9,  "speed_mult": 0.25},
 }
+ALL_PHASES = list(PHASE_PROFILES)
+_PH = {k: np.array([PHASE_PROFILES[p].get(k, d) for p in ALL_PHASES], dtype=float)
+       for k, d in (("load", 0.0), ("throttle", 0.5), ("vibration_mult", 1.0),
+                    ("speed_mult", 0.5), ("pressure_spike", 0.0), ("cooling", 0.0))}
 
-
-# ═════════════════════════════════════════════════════════════════════════
-# (Senaryo 1) MANUEL SEÇİLEBİLİR FİZİKSEL KOŞULLAR
-# ─────────────────────────────────────────────────────────────────────────
-# Kullanıcı Detay'dan bir koşul seçer; makine o koşulda SABİT kalır (döngü
-# ilerlemez). Her koşul bir PHASE_PROFILES girdisine bağlanır. Liste araç
-# TİPİNE göre değişir (yükleyici vs kamyon). "auto" = operasyon döngüsü.
-# Bu tek kaynak hem UI hem de IF eğitimi tarafından kullanılır.
 MANUAL_SCENARIOS: Dict[str, List[Tuple[str, str]]] = {
     "loader": [
-        ("idle",            "Rölanti — bekleme"),
+        ("idle", "Rölanti — bekleme"),
         ("returning_empty", "Boş — düz yol (hızlı)"),
-        ("picking_up",      "Kepçe doldurma (hidrolik yük)"),
-        ("hauling_loaded",  "Yüklü — taşıma"),
-        ("kotu_yol",        "Kötü / taşlık yol — yüklü"),
+        ("picking_up", "Kepçe doldurma (hidrolik yük)"),
+        ("hauling_loaded", "Yüklü — taşıma"),
+        ("kotu_yol", "Kötü / taşlık yol — yüklü"),
     ],
     "truck": [
-        ("idle_waiting",        "Rölanti — bekleme"),
-        ("descending_empty",    "Boş — yokuş aşağı (serin, hızlı)"),
+        ("idle_waiting", "Rölanti — bekleme"),
+        ("descending_empty", "Boş — yokuş aşağı (serin, hızlı)"),
         ("accelerating_loaded", "Yüklü — düz yol"),
-        ("climbing_loaded",     "Yüklü — yokuş yukarı (max stres)"),
-        ("kotu_yol",            "Kötü / taşlık yol — yüklü"),
+        ("climbing_loaded", "Yüklü — yokuş yukarı (max stres)"),
+        ("kotu_yol", "Kötü / taşlık yol — yüklü"),
     ],
 }
 
 
 def manual_scenarios_for(eq_type: str) -> List[Tuple[str, str]]:
-    """Araç tipine göre manuel seçilebilir fiziksel koşul listesi."""
     return MANUAL_SCENARIOS.get(eq_type, MANUAL_SCENARIOS["loader"])
 
 
-@dataclass
-class EquipmentRuntimeState:
-    """Bir makinenin canlı durumu (uygulama belleğinde tutulur)."""
-    cycle_phase:    str   = "idle"
-    phase_elapsed:  float = 0.0      # bu fazda geçen saniye
-    runtime_hours:  float = 0.0      # toplam çalışma saati
-    wear_level:     float = 0.05     # 0.0 yeni → 1.0 arızalı
-    last_update:    Optional[datetime] = None
-    forced_fault:   Optional[str] = None    # enjekte edilen arıza tipi
-    manual_phase:   Optional[str] = None    # (Senaryo 1) elle sabitlenen faz —
-    # dolu ise döngü İLERLEMEZ, makine seçilen fiziksel koşulda kalır
-    # (örn. "yokuş yukarı yüklü"). None = otomatik operasyon döngüsü.
-    fault_readings_left: int = 0     # arızanın süreceği kalan okuma sayısı
-    # (Adım 4) Arıza artık tek okumada kaybolmuyor: gerçekte bir rulman
-    # bir saniyeliğine bozulup düzelmez. Enjeksiyon 4-6 okuma sürer;
-    # böylece hem simülasyon gerçekçi olur hem de tespit güvenilirliği artar
-    # (tek okumada ~%60-70 yakalanan arıza, 4-6 ardışık okumada ~%100).
-    last_fault:    Optional[str] = None       # (Senaryo 2) son enjekte arıza tipi
-    last_fault_ts: Optional[datetime] = None  # ve zamanı — RUL gömme penceresi için:
-    # forced_fault sönse bile enjeksiyondan ~25 sn içinde RUL bu arızayı gösterir
-    # (rulNotify ile forced_fault arasındaki zamanlama yarışını kapatır).
+# ═════════════════════════════════════════════════════════════════════════
+# 4) BİLEŞENLER — hasar süreçleri
+# ═════════════════════════════════════════════════════════════════════════
+# eta: hasar başlangıcı Weibull ölçeği (çalışma saati), beta: şekil
+# g: başladıktan sonra büyüme hızı medyanı (1/saat); D'nin 0→1 süresi ≈ ln(21)/g
+COMPONENTS: Dict[str, dict] = {
+    "rulman":         {"eta": 3500, "g": 0.020, "ad": "Rulman aşınması",
+                       "sistem": "Tahrik/şasi — rulman", "sensor": "vibration",
+                       "gerekce": "Titreşim, aynı devir ve yükte beklenenin belirgin üzerinde; devirle birlikte büyüyor (rulman yüzey hasarı imzası)."},
+    "hidrolik_pompa": {"eta": 4000, "g": 0.022, "ad": "Hidrolik/yağ pompası arızası",
+                       "sistem": "Hidrolik sistem — pompa", "sensor": "pressure",
+                       "gerekce": "Hidrolik basınç, aynı çalışma koşulunda beklenenin altında; pompa basıncı koruyamıyor."},
+    "sogutma":        {"eta": 4500, "g": 0.018, "ad": "Soğutma sistemi arızası",
+                       "sistem": "Soğutma — radyatör/fan", "sensor": "temperature",
+                       "gerekce": "Motor sıcaklığı, mevcut yük geçmişine göre beklenenin üzerinde; soğutma verimi düşüyor."},
+    "motor_isi":      {"eta": 5000, "g": 0.020, "ad": "Motor aşırı ısınması",
+                       "sistem": "Motor — iç sürtünme/yağlama", "sensor": "temperature",
+                       "gerekce": "Isı üretimi artıyor; aynı yakıt/yükte motor daha sıcak çalışıyor."},
+    "enjektor":       {"eta": 4500, "g": 0.020, "ad": "Enjektör / yanma arızası",
+                       "sistem": "Güç aktarma — yakıt/enjektör", "sensor": "fuel",
+                       "gerekce": "Aynı tork için yakıt tüketimi artıyor ve düzensiz yanma titreşimi görülüyor."},
+    "motor_sargi":    {"eta": 5500, "g": 0.019, "ad": "Aşırı akım — motor sargı zorlanması",
+                       "sistem": "Tahrik motoru — sargı", "sensor": "current",
+                       "gerekce": "Sürücü motor akımı aynı yükte beklenenin üzerinde; sargı izolasyonu zayıflıyor."},
+    "fren":           {"eta": 4000, "g": 0.024, "ad": "Fren sistemi sürtmesi / aşırı ısınma",
+                       "sistem": "Fren sistemi", "sensor": "temperature",
+                       "gerekce": "Fren sürtmesi: hız düşük, tork ve sıcaklık yüksek, titreşim hızla artıyor — İSG riski."},
+    "transmisyon":    {"eta": 5000, "g": 0.018, "ad": "Transmisyon / güç aktarma arızası",
+                       "sistem": "Güç aktarma — şanzıman", "sensor": "vibration",
+                       "gerekce": "Dişli kavrama titreşimi ve yağ sıcaklığı yükseliyor; dişli/rulman aşınması gelişiyor."},
+}
+COMPONENT_NAMES = list(COMPONENTS)
+_CI = {c: i for i, c in enumerate(COMPONENT_NAMES)}
+WEIBULL_BETA = 1.4
+GROWTH_SIGMA = 0.30          # g'nin log-normal yayılımı
+D_OFFSET = 0.05
+INJECT_D = 0.15              # Canlı Test: başlatılan arızanın başlangıç hasarı
+
+# Arayüz/eski API arıza kodları → bileşen
+FAULT_ALIASES = {
+    "yag_pompasi": "hidrolik_pompa", "pump": "hidrolik_pompa", "pressure_surge": "hidrolik_pompa",
+    "rulman": "rulman", "vibration_spike": "rulman",
+    "overheat": "motor_isi", "sogutma": "sogutma", "cooling": "sogutma",
+    "enjektor": "enjektor", "injector": "enjektor",
+    "overcurrent": "motor_sargi", "fren": "fren",
+    "transmisyon": "transmisyon", "sanziman": "transmisyon",
+}
+
+# Kritik sensör eşikleri — yalnız açıklama metinleri için (arıza tanımı D=1'dir)
+CRITICAL_MULTIPLIERS = {"temperature": 1.45, "vibration": 2.8, "current": 1.6, "pressure": 1.7}
 
 
-_states: Dict[str, EquipmentRuntimeState] = {}
+def critical_thresholds(equipment_id: str) -> dict:
+    p = EQUIPMENT_PROFILES[equipment_id]
+    return {k: round(p[k][1] * m, 2) for k, m in CRITICAL_MULTIPLIERS.items()}
 
 
-def _get_state(equipment_id: str) -> EquipmentRuntimeState:
-    if equipment_id not in _states:
-        # Makineler "yepyeni" değil — bir miktar geçmiş çalışmayla başlasın
-        # (demoda gerçekçilik için).
-        _states[equipment_id] = EquipmentRuntimeState(
-            wear_level    = float(np.random.uniform(0.05, 0.20)),
-            runtime_hours = float(np.random.uniform(150, 800)),
-            last_update   = datetime.now(timezone.utc),
-        )
-    return _states[equipment_id]
+def _stress_avg(eq_type: str) -> np.ndarray:
+    """Döngü boyunca ortalama stres (gerçek RUL hesabı için) — bileşen başına."""
+    cyc = _cycle_for(eq_type)
+    w = np.array([d for _, d in cyc], float)
+    L = np.array([PHASE_PROFILES[p]["load"] for p, _ in cyc])
+    u = np.array([PHASE_PROFILES[p]["throttle"] for p, _ in cyc])
+    lm, um = (w * L).sum() / w.sum(), (w * u).sum() / w.sum()
+    return _stress(np.array([lm]), np.array([um]))[0]
 
 
-def _advance_state(state: EquipmentRuntimeState, eq_type: str,
-                   dt_seconds: float) -> None:
-    """Durum makinesini dt_seconds kadar ilerlet.
-    Manuel mod: faz sabit kalır (döngü ilerlemez), yıpranma/saat yine birikir."""
-    if state.manual_phase:
-        state.cycle_phase = state.manual_phase
-        state.runtime_hours += dt_seconds / 3600.0
-        return
-    cycle = _cycle_for(eq_type)
-    phases    = [p[0] for p in cycle]
-    durations = [p[1] for p in cycle]
-
-    if state.cycle_phase not in phases:
-        state.cycle_phase   = phases[0]
-        state.phase_elapsed = 0.0
-
-    state.phase_elapsed += dt_seconds
-    idx = phases.index(state.cycle_phase)
-    # Faz süresi dolduysa sıradakine geç
-    while state.phase_elapsed >= durations[idx]:
-        state.phase_elapsed -= durations[idx]
-        idx = (idx + 1) % len(phases)
-        state.cycle_phase = phases[idx]
-
-    # Çalışma saatleri biriksin (faz "idle" olsa bile motor çalışıyor)
-    state.runtime_hours += dt_seconds / 3600.0
-
-    # Yıpranma modeli: madencilik LHD/Kamyon MTBF ~5000–8000 saat.
-    # Baz yıpranma hızı: 5000 saatte %100 (yalnız stres çarpanı 1.0 iken).
-    # Yüksek yük + titreşimli fazlar bunu 2–3x hızlandırabilir.
-    phase_cfg = PHASE_PROFILES.get(state.cycle_phase, {})
-    stress_mul = 1.0 + 1.0 * phase_cfg.get("load", 0.0) \
-                     + 0.4 * (phase_cfg.get("vibration_mult", 1.0) - 1.0)
-    base_rate  = 1.0 / (5000 * 3600)   # birim: 1/saniye → 5000 saat = %100
-    state.wear_level = min(1.0,
-        state.wear_level + base_rate * stress_mul * dt_seconds)
+def _stress(load: np.ndarray, rpm_frac: np.ndarray) -> np.ndarray:
+    """Bileşen başına anlık stres çarpanı, şekil (n, C)."""
+    base = 0.6 + 0.8 * load
+    s = np.repeat(base[:, None], len(COMPONENT_NAMES), axis=1)
+    for c in ("rulman", "transmisyon"):
+        s[:, _CI[c]] += 0.3 * rpm_frac
+    s[:, _CI["fren"]] += 0.3 * load
+    return s
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 4) FİZİKSEL OKUMA HESABI — Korelasyonlu sensör değerleri
+# 5) SİMÜLASYON MOTORU — N makine birlikte (vektörel); canlıda N=1
 # ═════════════════════════════════════════════════════════════════════════
-def _compute_reading(equipment_id: str, state: EquipmentRuntimeState) -> dict:
+class Fleet:
+    """Aynı ekipman tipinden N makinenin fiziksel dijital ikizi.
+
+    step(dt) fiziksel saati dt saniye ilerletir; read() o anki sensör
+    okumalarını (ölçüm gürültüsüyle) döner. Canlı akış (generate_reading)
+    ve eğitim verisi (simulate_streams) bu sınıfı birebir aynı şekilde kullanır.
     """
-    Durum + yıpranma + faz konfigürasyonundan tek bir sensör okuması üretir.
-    Tüm sensörler birbirleriyle korelasyonlu (gerçek fizik).
-    """
-    profile   = EQUIPMENT_PROFILES[equipment_id]
-    phase_cfg = PHASE_PROFILES.get(state.cycle_phase, PHASE_PROFILES["idle"])
 
-    load     = phase_cfg.get("load", 0.0)
-    throttle = phase_cfg.get("throttle", 0.5)
-    vib_mul  = phase_cfg.get("vibration_mult", 1.0)
-    spd_mul  = phase_cfg.get("speed_mult", 0.5)
-    spike    = phase_cfg.get("pressure_spike", False)
-    cooling  = phase_cfg.get("cooling", False)
-    wear     = state.wear_level
+    def __init__(self, equipment_id: str, n: int = 1, seed: Optional[int] = None,
+                 aging_accel: float = AGING_ACCEL, natural_faults: bool = True,
+                 op_hours: Optional[np.ndarray] = None):
+        self.eq_id = equipment_id
+        self.prof = EQUIPMENT_PROFILES[equipment_id]
+        self.type = self.prof["type"]
+        self.n = n
+        self.rng = np.random.default_rng(seed)
+        self.accel = aging_accel
+        self.natural = natural_faults
+        rng = self.rng
 
-    # ── Sıcaklık ──────────────────────────────────────────────
-    # Taban + yük katkısı + yıpranma + soğutma (yokuş aşağı) + gürültü
-    t_lo, t_hi = profile["temperature"]
-    t_range = t_hi - t_lo
-    t = t_lo + 0.5 * t_range                        # baz
-    t += t_range * 0.7 * load                       # yük → ısı
-    t += t_range * 0.5 * wear                       # yıpranma → ısı
-    if cooling:
-        t -= t_range * 0.4                          # yokuş aşağı → soğuk
-    t += np.random.normal(0, t_range * 0.04)
+        cyc = _cycle_for(self.type)
+        self.cycle_idx = np.array([ALL_PHASES.index(p) for p, _ in cyc])
+        self.cycle_dur = np.array([d for _, d in cyc], float)
+        self.cpos = rng.integers(0, len(cyc), n)                 # döngüdeki konum
+        self.pdur = self.cycle_dur[self.cpos] * rng.uniform(0.8, 1.2, n)
+        self.pel = rng.uniform(0, 1, n) * self.pdur              # fazda geçen süre
+        self.manual = np.full(n, -1)                             # -1 = otomatik döngü
+        self.down_s = np.zeros(n)                                # arıza sonrası duruş
 
-    # ── Akım (motor) ──────────────────────────────────────────
-    c_lo, c_hi = profile["current"]
-    c_range = c_hi - c_lo
-    c = c_lo + 0.2 * c_range                        # baz akım
-    c += c_range * 0.9 * throttle                   # gaz → akım
-    c += c_range * 0.4 * load                       # yük → ek akım
-    c += np.random.normal(0, c_range * 0.05)
+        p = self.prof
+        self.load = np.zeros(n)
+        self.rpm = np.full(n, float(p["rpm"][0]))
+        self.speed = np.zeros(n)
+        self.torque = np.full(n, p["torque"][0] * 0.03)
+        self.fuel = np.full(n, float(p["fuel"][0]))
+        self.current = np.full(n, float(p["current"][0]))
+        self.pressure = np.full(n, float(np.mean(p["pressure"])))
+        t_lo, t_hi = p["temperature"]
+        self.temp = rng.uniform(t_lo, t_lo + 0.6 * (t_hi - t_lo), n)
+        self.vib = np.full(n, float(p["vibration"][0]))
+        self.road = np.zeros(n)
+        g_lo, g_hi = p["gas"]
+        self.gas = np.full(n, (g_lo + g_hi) / 2)
+        self.gas_event = np.zeros(n)
 
-    # ── Titreşim ──────────────────────────────────────────────
-    v_lo, v_hi = profile["vibration"]
-    v_range = v_hi - v_lo
-    # Titreşim motor aktivitesiyle orantılı: devir (≈throttle) arttıkça artar;
-    # yük ve faz karakteri (kepçe/boşaltma/bozuk yol) ek katkı verir; yıpranma
-    # tabanı yükseltir. Böylece devir–tork–titreşim birlikte hareket eder.
-    v = v_lo + v_range * 0.15                       # rölanti motor titreşimi (taban)
-    v += v_range * 0.30 * throttle                  # devir arttıkça titreşim
-    v += v_range * 0.15 * load                      # yük → titreşim
-    v += v_range * 0.30 * max(0.0, vib_mul - 1.0)   # faza özel ek (kepçe/boşaltma/bozuk yol)
-    v += v_range * 0.45 * wear                      # yıpranmış rulman → titreşim
-    v += np.random.normal(0, v_range * 0.06)
-    v  = max(0.05, v)
+        self.op_hours = (np.asarray(op_hours, float) if op_hours is not None
+                         else rng.uniform(150, 800, n))
+        C = len(COMPONENT_NAMES)
+        self.D = np.zeros((n, C))
+        self.g = np.array([COMPONENTS[c]["g"] for c in COMPONENT_NAMES])[None, :] \
+            * rng.lognormal(0.0, GROWTH_SIGMA, (n, C))
+        self.onset = np.full((n, C), np.inf)
+        if natural_faults:
+            self.onset = self.op_hours[:, None] + self._sample_incubation((n, C))
+        self.failures: List[dict] = []
+        self.s_avg = _stress_avg(self.type)
 
-    # ── Hidrolik basınç ───────────────────────────────────────
-    p_lo, p_hi = profile["pressure"]
-    p_range = p_hi - p_lo
-    p = p_lo + 0.5 * p_range                        # nominal orta
-    if spike:                                       # kepçe/boşaltma anı
-        p = p_hi + p_range * 0.1
-    p += np.random.normal(0, p_range * 0.03)
+        # Makineden makineye fark (üretim toleransı, saha koşulu, sensör
+        # kalibrasyonu): her birim kendi sabit sapmalarıyla gelir. Normal
+        # davranış modeli bunları bilmez → artıklarda gerçekçi bir taban
+        # belirsizliği oluşur (tüm makineler birebir aynı olsaydı tespit
+        # yapay biçimde kolaylaşırdı).
+        v = lambda s: 1.0 + rng.normal(0, s, n)
+        self.var = {"heat": v(0.03), "cool": v(0.03), "amb": rng.normal(0, 2.0, n),
+                    "vib": v(0.08), "pres": v(0.015), "cur": v(0.02), "fuel": v(0.03),
+                    "t_bias": rng.normal(0, 0.8, n), "p_bias": rng.normal(0, 2.0, n)}
 
-    # ── Hız ───────────────────────────────────────────────────
-    s_lo, s_hi = profile["speed"]
-    s_range = s_hi - s_lo
-    if spd_mul <= 0.0:
-        s = 0.0                       # durağan faz (rölanti/yüklenme) → hız tam 0
-    else:
-        s = s_lo + spd_mul * s_range + np.random.normal(0, s_range * 0.05)
-        s = max(0.0, s)
+    # ── yardımcılar ──────────────────────────────────────────────
+    def _sample_incubation(self, shape):
+        eta = np.array([COMPONENTS[c]["eta"] for c in COMPONENT_NAMES], float)
+        return eta * self.rng.weibull(WEIBULL_BETA, shape)
 
-    # ── Devir / Tork / Yakıt (güç aktarma — fizik korelasyonlu) ──
-    # Devir gaz pedalını izler; tork yük+gazla; yakıt devir+yük+yıpranmayla
-    # birlikte artar. Yokuş senaryosunda: hız düşer, tork/devir/yakıt yükselir.
-    r_lo, r_hi = profile["rpm"]
-    rpm = r_lo + (r_hi - r_lo) * throttle + np.random.normal(0, (r_hi - r_lo) * 0.03)
-    tq_lo, tq_hi = profile["torque"]
-    tork = tq_lo + (tq_hi - tq_lo) * min(1.0, 0.55 * load + 0.45 * throttle) \
-           + np.random.normal(0, (tq_hi - tq_lo) * 0.03)
-    if cooling:
-        tork *= 0.35          # yokuş aşağı: motor freni, tork düşük
+    def repair(self, unit: int = 0, component: Optional[str] = None) -> List[str]:
+        """Bakım: bileşen(ler)i yenile (hasar 0, yeni kuluçka)."""
+        idx = range(len(COMPONENT_NAMES)) if component is None else [_CI[component]]
+        done = []
+        for ci in idx:
+            name = COMPONENT_NAMES[ci]
+            if self.D[unit, ci] > 0:
+                done.append(name)
+            self.D[unit, ci] = 0.0
+            self.g[unit, ci] = COMPONENTS[name]["g"] * self.rng.lognormal(0, GROWTH_SIGMA)
+            self.onset[unit, ci] = (self.op_hours[unit]
+                                    + COMPONENTS[name]["eta"] * self.rng.weibull(WEIBULL_BETA)
+                                    if self.natural else np.inf)
+        return done
 
-    # ── Rölanti (durağan + yüksüz): motor sabit rölanti devrinde döner, araç
-    # durur, tahrik torku ~0'dır. Değerler ekranda titremesin diye çok az
-    # gürültüyle neredeyse sabit tutulur.
-    if spd_mul <= 0.0 and load <= 0.0 and throttle <= 0.15:
-        rpm  = r_lo + np.random.normal(0, (r_hi - r_lo) * 0.004)   # sabit rölanti devri
-        tork = max(0.0, tq_lo * 0.03 + np.random.normal(0, tq_lo * 0.004))  # ~sabit, ~0
-    f_lo, f_hi = profile["fuel"]
-    yakit = f_lo + (f_hi - f_lo) * min(1.0, 0.55 * throttle + 0.35 * load + 0.15 * wear) \
-            + np.random.normal(0, (f_hi - f_lo) * 0.04)
+    def start_fault(self, component: str, unit: int = 0, d0: float = INJECT_D):
+        """Canlı Test: bileşende hasarı ŞİMDİ başlat (kuluçkayı atla). Hasar
+        bundan sonra fiziksel modelle büyümeye devam eder — kendiliğinden
+        kaybolmaz; bakım (repair) ya da arıza ile sonlanır."""
+        ci = _CI[component]
+        self.onset[unit, ci] = min(self.onset[unit, ci], self.op_hours[unit])
+        self.D[unit, ci] = max(self.D[unit, ci], d0)
 
-    # ── Metan (ortam) ─────────────────────────────────────────
-    # Mekanikten bağımsız, ortam fonu. force_gas dışarıdan setlenir.
-    g_lo, g_hi = profile["gas"]
-    g = max(0.0, np.random.normal((g_lo + g_hi) / 2, (g_hi - g_lo) / 4))
+    def phase_names(self) -> List[str]:
+        return [ALL_PHASES[i] for i in self._phase_idx()]
 
-    # ── Zorlanan arıza enjeksiyonu (yalnız Canlı Test'ten gelir) ──
-    # Arıza şiddeti MUTLAKTIR: gerçek bir rulman arızası "rölantinin 2 katı"
-    # değil, kritik eşiğe vurmuş mutlak yüksek titreşim üretir. Çarpan yerine
-    # "kritik eşiğin %90-110'u" tabanı kullanılır — makine hangi fazda olursa
-    # olsun arıza belirgin görünür ve 2/3 teyit kuralından güvenilirce geçer.
-    if state.forced_fault:
-        _crit = {k: profile[k][1] * m for k, m in
-                 (("temperature", 1.45), ("vibration", 2.8),
-                  ("current", 1.6), ("pressure", 1.7))}
-        hi_t = profile["temperature"][1]
-        ff = state.forced_fault
-        # ── (Senaryo 2) Çok-sensörlü, gerçekçi arıza imzaları ──
-        # Her imza IF'in gördüğü 5 sensörden (sıcaklık, titreşim, basınç, akım,
-        # hız) en az birinde belirgin sapar → tespit garanti. Yakıt/tork/devir
-        # de fizik gereği birlikte hareket eder (arayüzde görünür).
-        if ff in ("yag_pompasi", "pump"):
-            # Yağ/hidrolik pompa arızası: pompa basıncı tutamaz → BASINÇ DÜŞER;
-            # yağ dolaşımı azalır → yağ ısısı hafif düşer; mekanik zorlanma →
-            # titreşim artar; motor telafi için daha çok yakar.
-            p = min(p, p_lo * np.random.uniform(0.42, 0.55))
-            v = max(v, _crit["vibration"] * np.random.uniform(0.72, 0.92))
-            t = t - t_range * np.random.uniform(0.15, 0.30)
-            yakit *= np.random.uniform(1.12, 1.22)
-        elif ff in ("rulman", "vibration_spike"):
-            # Rulman aşınması: sürtünme → yüksek titreşim + ısı hafif yükselir.
-            v = max(v, _crit["vibration"] * np.random.uniform(0.95, 1.15))
-            t = max(t, hi_t * np.random.uniform(1.02, 1.08))
-        elif ff == "overheat":
-            # Motor aşırı ısınma: ısı kritik + ısınan motor daha çok akım çeker.
-            t = max(t, _crit["temperature"] * np.random.uniform(0.95, 1.10))
-            c = max(c, profile["current"][1] * np.random.uniform(1.05, 1.20))
-        elif ff in ("enjektor", "injector"):
-            # Enjektör/yanma arızası: düzensiz yanma (misfire) → titreşim artar,
-            # tork düşer, motor telafi için daha çok yakar, egzoz ısısı hafif artar.
-            v = max(v, _crit["vibration"] * np.random.uniform(0.70, 0.90))
-            yakit *= np.random.uniform(1.20, 1.35)
-            tork *= np.random.uniform(0.60, 0.75)
-            t = max(t, hi_t * np.random.uniform(1.02, 1.06))
-        elif ff == "fren":
-            # Fren aşırı ısınması: sürtünme ısısı → sıcaklık yükselir; balata
-            # sürtmesi → titreşim ve düşük/düzensiz hız (fren dragı).
-            t = max(t, _crit["temperature"] * np.random.uniform(0.80, 0.92))
-            v = max(v, _crit["vibration"] * np.random.uniform(0.55, 0.75))
-            s = s * np.random.uniform(0.25, 0.45)
-        elif ff in ("transmisyon", "sanziman"):
-            # Transmisyon/güç aktarma arızası: dişli/rulman hasarı → yüksek
-            # titreşim + şanzıman yağ sıcaklığı yükselir.
-            v = max(v, _crit["vibration"] * np.random.uniform(0.75, 0.95))
-            t = max(t, hi_t * np.random.uniform(1.06, 1.14))
-        elif ff in ("sogutma", "cooling"):
-            # Soğutma sistemi arızası (radyatör/fan): soğutma verimi düşer →
-            # sıcaklık sürekli yükselir (akım normal — motorun kendisi değil).
-            t = max(t, _crit["temperature"] * np.random.uniform(0.88, 1.02))
-        elif ff == "overcurrent":
-            # Aşırı akım / motor sargı zorlanması: akım sürekli üst sınırın
-            # üstünde + sargı ısınması.
-            c = max(c, _crit["current"] * np.random.uniform(0.90, 1.08))
-            t = max(t, hi_t * np.random.uniform(1.03, 1.10))
-        elif ff == "pressure_surge":
-            p = max(p, _crit["pressure"] * np.random.uniform(0.92, 1.08))
-    if state.forced_fault:
-        state.fault_readings_left -= 1
-        if state.fault_readings_left <= 0:
-            state.forced_fault = None   # arıza süresi doldu
+    def _phase_idx(self) -> np.ndarray:
+        idx = self.cycle_idx[self.cpos]
+        idx = np.where(self.manual >= 0, self.manual, idx)
+        if self.down_s.any():
+            idle = ALL_PHASES.index("idle_waiting" if self.type == "truck" else "idle")
+            idx = np.where(self.down_s > 0, idle, idx)
+        return idx
 
+    def true_rul(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Analitik gerçek RUL (saat) ve onu belirleyen bileşen indeksi."""
+        gs = self.g * self.s_avg[None, :]
+        active = self.op_hours[:, None] >= self.onset
+        t_grow = np.log((1 + D_OFFSET) / (self.D + D_OFFSET)) / gs
+        t_full = np.log((1 + D_OFFSET) / D_OFFSET) / gs
+        rul_c = np.where(self.D >= 1, 0.0,
+                         np.where(active, t_grow, (self.onset - self.op_hours[:, None]) + t_full))
+        ci = np.argmin(rul_c, axis=1)
+        return rul_c[np.arange(self.n), ci], ci
+
+    # ── fiziksel adım ────────────────────────────────────────────
+    def step(self, dt: float = 1.0):
+        n, p, rng = self.n, self.prof, self.rng
+        a = lambda tau: 1.0 - np.exp(-dt / tau)
+
+        # Faz ilerlemesi (manuel ve duruşta olmayanlar)
+        run = (self.manual < 0) & (self.down_s <= 0)
+        self.pel = np.where(run, self.pel + dt, self.pel)
+        nxt = run & (self.pel >= self.pdur)
+        if nxt.any():
+            self.pel[nxt] -= self.pdur[nxt]
+            self.cpos[nxt] = (self.cpos[nxt] + 1) % len(self.cycle_idx)
+            self.pdur[nxt] = self.cycle_dur[self.cpos[nxt]] * rng.uniform(0.8, 1.2, nxt.sum())
+        self.down_s = np.maximum(0.0, self.down_s - dt)
+
+        ph = self._phase_idx()
+        L_t, u = _PH["load"][ph], _PH["throttle"][ph]
+        vmul, smul = _PH["vibration_mult"][ph], _PH["speed_mult"][ph]
+        spike, cool = _PH["pressure_spike"][ph] > 0, _PH["cooling"][ph] > 0
+        D = self.D
+        d = {c: D[:, i] for c, i in _CI.items()}
+
+        # Yük, devir, hız
+        self.load += a(3.0) * (L_t - self.load)
+        r_lo, r_hi = p["rpm"]
+        self.rpm += a(1.5) * (r_lo + (r_hi - r_lo) * u - self.rpm)
+        rf = np.clip((self.rpm - r_lo) / (r_hi - r_lo), 0, 1)
+        s_lo, s_hi = p["speed"]
+        spd_t = np.where(smul > 0, s_lo + smul * (s_hi - s_lo), 0.0) * (1 - 0.45 * d["fren"])
+        self.speed += a(7.0 if self.type == "truck" else 4.0) * (spd_t - self.speed)
+
+        # Tork (iniş: motor freni; rölanti: ~0; fren sürtmesi: ek tork; enjektör: kayıp)
+        tq_lo, tq_hi = p["torque"]
+        tq_t = tq_lo + (tq_hi - tq_lo) * np.clip(0.55 * self.load + 0.45 * u, 0, 1)
+        tq_t = np.where(cool, tq_t * 0.35, tq_t)
+        idle = (smul <= 0) & (L_t <= 0) & (u <= 0.15)
+        tq_t = np.where(idle, tq_lo * 0.03, tq_t)
+        tq_t = tq_t * (1 - 0.30 * d["enjektor"]) * (1 + 0.25 * d["fren"] * (smul > 0))
+        self.torque += a(0.8) * (tq_t - self.torque)
+
+        # Yakıt
+        f_lo, f_hi = p["fuel"]
+        heat_frac = np.clip(0.6 * u + 0.35 * self.load, 0, 1)
+        fuel_t = (f_lo + (f_hi - f_lo) * heat_frac) \
+            * (1 + 0.35 * d["enjektor"] + 0.10 * d["hidrolik_pompa"] + 0.10 * d["fren"]) \
+            * self.var["fuel"]
+        self.fuel += a(1.0) * (fuel_t - self.fuel)
+
+        # Akım (sürücü motor) — sargı hasarı akımı yükseltir
+        c_lo, c_hi = p["current"]
+        cur_t = (c_lo + (c_hi - c_lo) * (0.05 + 0.55 * u + 0.35 * self.load)) \
+            * (1 + 0.60 * d["motor_sargi"]) * self.var["cur"]
+        self.current += a(0.5) * (cur_t - self.current)
+
+        # Hidrolik basınç — pompa hasarı basıncı düşürür
+        pr_lo, pr_hi = p["pressure"]
+        p_t = np.where(spike, pr_hi + 0.1 * (pr_hi - pr_lo), pr_lo + 0.5 * (pr_hi - pr_lo))
+        p_t = p_t * (1 - 0.55 * d["hidrolik_pompa"]) * self.var["pres"]
+        self.pressure += a(0.8) * (p_t - self.pressure)
+
+        # Sıcaklık — toplu ısıl model
+        t_lo, t_hi = p["temperature"]
+        G = (t_lo - T_AMBIENT) + (t_hi - t_lo) * (0.1 + 0.8 * heat_frac)
+        G = G * (1 + 0.75 * d["motor_isi"] + 0.35 * d["fren"] + 0.25 * d["transmisyon"]
+                 + 0.12 * d["rulman"] + 0.20 * d["motor_sargi"] + 0.10 * d["enjektor"]) \
+            * self.var["heat"]
+        kc = (1 - 0.5 * d["sogutma"]) * np.where(cool, 1.25, 1.0) * self.var["cool"]
+        self.temp += a(TAU_TEMP) * (T_AMBIENT + self.var["amb"] + G / kc - self.temp)
+
+        # Titreşim (RMS) — zemin pürüzü OU süreci + hasar katkıları
+        self.road += -self.road * dt / 3.0 + np.sqrt(2 * dt / 3.0) * rng.standard_normal(n)
+        v_lo, v_hi = p["vibration"]
+        vr = v_hi - v_lo
+        sf = np.clip(self.speed / s_hi, 0, 1)
+        v = (v_lo + vr * (0.12 + 0.28 * rf + 0.12 * self.load
+                          + 0.30 * np.maximum(0, vmul - 1))) * self.var["vib"]
+        v += vr * 0.10 * sf * np.abs(self.road) * vmul
+        v += vr * 2.2 * d["rulman"] ** 1.5 * (0.5 + 0.5 * rf)
+        v += vr * 1.5 * d["transmisyon"] ** 1.5 * (0.3 + 0.7 * rf)
+        misfire = rng.random(n) < 0.5 * d["enjektor"]
+        v += vr * d["enjektor"] * (0.6 + 1.2 * misfire)
+        v += vr * (0.5 * d["hidrolik_pompa"] + 0.8 * d["fren"] * sf)
+        self.vib += a(1.0) * (v - self.vib)
+
+        # Metan — ortam OU süreci + dışarıdan tetiklenen gaz olayı (sönümlenir)
+        g_lo, g_hi = p["gas"]
+        gm = (g_lo + g_hi) / 2
+        self.gas += (gm - self.gas) * dt / 120.0 + 0.04 * np.sqrt(dt / 60.0) * rng.standard_normal(n)
+        self.gas = np.maximum(0.0, self.gas)
+        self.gas_event *= np.exp(-dt / 40.0)
+
+        # Hasar büyümesi (hasar saati)
+        dt_h = dt * self.accel / 3600.0
+        if dt_h > 0:
+            active = self.op_hours[:, None] >= self.onset
+            s = _stress(self.load, rf)
+            self.D = np.where(active, np.minimum(1.0, D + self.g * s * (D + D_OFFSET) * dt_h), D)
+            self.op_hours = self.op_hours + dt_h * (self.down_s <= 0)
+            newly = (self.D >= 1.0) & (D < 1.0)
+            if newly.any():
+                for i, ci in zip(*np.nonzero(newly)):
+                    self.failures.append({"unit": int(i), "component": COMPONENT_NAMES[ci],
+                                          "op_hours": float(self.op_hours[i])})
+
+    def read(self) -> Dict[str, np.ndarray]:
+        """Ölçüm gürültülü sensör okumaları (her anahtar şekil (n,))."""
+        rng, n, p = self.rng, self.n, self.prof
+        nz = lambda s: rng.normal(0, s, n)
+        speed = np.where(self.speed < 0.05, 0.0, np.maximum(0, self.speed + nz(0.03 * p["speed"][1] / 7)))
+        return {
+            "temperature": self.temp + self.var["t_bias"] + nz(0.25),
+            "vibration":   np.maximum(0.05, self.vib * (1 + nz(0.03)) + nz(0.03)),
+            "pressure":    self.pressure + self.var["p_bias"] + nz(1.2),
+            "current":     self.current + nz(1.2),
+            "speed":       speed,
+            "rpm":         np.maximum(0, self.rpm + nz(8.0)),
+            "torque":      np.maximum(0, self.torque * (1 + nz(0.015)) + nz(3.0)),
+            "fuel":        np.maximum(0, self.fuel + nz(0.4)),
+            "gas":         np.maximum(0, self.gas + self.gas_event + nz(0.01)),
+        }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 6) CANLI DİJİTAL İKİZ — makine başına tekil durum
+# ═════════════════════════════════════════════════════════════════════════
+_twins: Dict[str, Fleet] = {}
+_last_update: Dict[str, datetime] = {}
+_events: Dict[str, List[dict]] = {}
+
+
+def get_twin(equipment_id: str) -> Fleet:
+    if equipment_id not in _twins:
+        tw = Fleet(equipment_id, n=1, natural_faults=NATURAL_FAULTS)
+        # Isıl durumu dengeye oturt (soğuk başlangıç geçişi canlıya taşınmasın)
+        acc = tw.accel
+        tw.accel = 0.0
+        for _ in range(600):
+            tw.step(1.0)
+        tw.accel = acc
+        _twins[equipment_id] = tw
+        _events[equipment_id] = []
+    return _twins[equipment_id]
+
+
+class _StateView:
+    """Geriye dönük uyumluluk: eski `_get_state(eq).manual_phase` kullanımı."""
+    def __init__(self, tw: Fleet):
+        self._tw = tw
+
+    @property
+    def manual_phase(self) -> Optional[str]:
+        m = int(self._tw.manual[0])
+        return None if m < 0 else ALL_PHASES[m]
+
+
+def _get_state(equipment_id: str) -> _StateView:
+    return _StateView(get_twin(equipment_id))
+
+
+def set_manual_phase(equipment_id: str, phase) -> None:
+    tw = get_twin(equipment_id)
+    tw.manual[0] = -1 if phase in (None, "auto") else ALL_PHASES.index(phase)
+
+
+def start_fault(equipment_id: str, fault_type: Optional[str] = None) -> str:
+    tw = get_twin(equipment_id)
+    comp = FAULT_ALIASES.get(fault_type, fault_type) if fault_type else None
+    if comp not in COMPONENTS:
+        comp = str(tw.rng.choice(COMPONENT_NAMES))
+    tw.start_fault(comp)
+    _events[equipment_id].append({"tip": "arıza_başlatıldı", "bilesen": comp,
+                                  "op_hours": float(tw.op_hours[0]),
+                                  "zaman": datetime.now(timezone.utc).isoformat()})
+    return comp
+
+
+def maintenance(equipment_id: str, component: Optional[str] = None) -> dict:
+    tw = get_twin(equipment_id)
+    comp = FAULT_ALIASES.get(component, component) if component else None
+    yenilenen = tw.repair(0, comp)
+    _events[equipment_id].append({"tip": "bakım", "bilesenler": yenilenen,
+                                  "op_hours": float(tw.op_hours[0]),
+                                  "zaman": datetime.now(timezone.utc).isoformat()})
+    return {"equipment_id": equipment_id, "yenilenen": yenilenen}
+
+
+def twin_status(equipment_id: str) -> dict:
+    """İkizin iç durumu — hata ayıklama ve değerlendirme içindir (gerçek
+    sahada bilinemeyecek değerleri, ör. gerçek RUL, içerir)."""
+    tw = get_twin(equipment_id)
+    rul, ci = tw.true_rul()
     return {
-        "temperature": round(float(t), 3),
-        "vibration":   round(float(v), 3),
-        "pressure":    round(float(p), 3),
-        "current":     round(float(c), 3),
-        "speed":       round(float(s), 3),
-        "gas":         round(float(g), 3),
-        "rpm":         round(float(max(0, rpm)), 1),
-        "torque":      round(float(max(0, tork)), 1),
-        "fuel":        round(float(max(0, yakit)), 2),
+        "equipment_id": equipment_id,
+        "op_hours": round(float(tw.op_hours[0]), 2),
+        "faz": tw.phase_names()[0],
+        "hasar": {c: round(float(tw.D[0, i]), 4) for c, i in _CI.items()},
+        "gercek_rul_saat": round(float(rul[0]), 1),
+        "belirleyici_bilesen": COMPONENT_NAMES[int(ci[0])],
+        "yaslanma_hizlandirma": tw.accel,
+        "olaylar": _events.get(equipment_id, [])[-20:],
     }
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# 5) DIŞA AÇIK API — Geriye dönük uyumlu fonksiyonlar
-# ═════════════════════════════════════════════════════════════════════════
-def set_manual_phase(equipment_id: str, phase) -> None:
-    """(Senaryo 1) Aracın fiziksel koşulunu elle sabitle; None/'auto' = döngüye dön."""
-    st = _get_state(equipment_id)
-    st.manual_phase = None if phase in (None, "auto") else phase
+def _package(tw: Fleet, r: Dict[str, np.ndarray], i: int = 0) -> dict:
+    out = {k: round(float(v[i]), 3) for k, v in r.items()}
+    out["rpm"] = round(out["rpm"], 1)
+    out["torque"] = round(out["torque"], 1)
+    out["fuel"] = round(out["fuel"], 2)
+    out["equipment_id"] = tw.eq_id
+    out["equipment_type"] = tw.type
+    out["phase"] = tw.phase_names()[i]
+    out["op_hours"] = round(float(tw.op_hours[i]), 3)
+    out["wear_level"] = round(float(tw.D[i].max()), 4)
+    return out
 
 
 def generate_reading(equipment_id: str, force_anomaly: bool = False,
                      force_gas: bool = False, fault_type: str = None) -> dict:
-    """
-    Canlı stream için: durum makinesini bir adım ilerletip korelasyonlu
-    sensör okuması döner. force_anomaly=True ise sonraki okumaya rastgele
-    bir arıza enjekte edilir; force_gas=True ise metan anlık olarak
-    İSG eşiklerinin üzerine çıkar.
-    """
+    """Canlı akış: ikizi geçen gerçek süre kadar ilerletip okuma döner.
+
+    force_anomaly=True → bir bileşende arıza BAŞLATILIR (fault_type ile
+    seçilebilir). Arıza tek okumada kaybolmaz; fiziksel olarak büyür.
+    force_gas=True → ortamda metan olayı (birkaç dakikada sönümlenir)."""
     if equipment_id not in EQUIPMENT_PROFILES:
         equipment_id = next(iter(EQUIPMENT_PROFILES))
+    tw = get_twin(equipment_id)
 
-    profile = EQUIPMENT_PROFILES[equipment_id]
-    state   = _get_state(equipment_id)
-
-    # Gerçek geçen süreyi ölç (uvicorn akışında ~8 sn, manuel testte değişebilir)
     now = datetime.now(timezone.utc)
-    if state.last_update is None:
-        dt = 8.0
-    else:
-        dt = (now - state.last_update).total_seconds()
-        dt = max(0.5, min(dt, 30.0))   # 0.5–30 sn arası clamp (zıplama önlemi)
-    state.last_update = now
-
-    _advance_state(state, profile["type"], dt)
+    last = _last_update.get(equipment_id)
+    dt = 3.0 if last is None else min(max((now - last).total_seconds(), 0.2), 30.0)
+    _last_update[equipment_id] = now
 
     if force_anomaly:
-        # (Senaryo 2) fault_type verilirse O arıza enjekte edilir; yoksa rastgele
-        state.forced_fault = fault_type or np.random.choice(
-            ["yag_pompasi", "rulman", "overheat", "enjektor",
-             "overcurrent", "fren", "transmisyon", "sogutma"]
-        )
-        state.last_fault = state.forced_fault
-        state.last_fault_ts = datetime.now(timezone.utc)
-        # Kısa tek olay: enjekte arıza garanti tespit edildiğinden bu pencere
-        # ≈ grafikteki anomali nokta sayısıdır. 4 okuma ≈ kısa bir spike; arıza
-        # bitince anomali hemen temizlenir. Alarm kenar-tetikli olduğundan tek düşer.
-        state.fault_readings_left = int(np.random.randint(3, 5))
-
-    reading = _compute_reading(equipment_id, state)
-
+        start_fault(equipment_id, fault_type)
     if force_gas:
-        reading["gas"] = round(float(np.random.uniform(1.2, 2.6)), 3)
+        tw.gas_event[0] = float(tw.rng.uniform(1.2, 2.4))
 
-    reading["equipment_id"]   = equipment_id
-    reading["equipment_type"] = profile["type"]
-    reading["phase"]          = state.cycle_phase
-    reading["wear_level"]     = round(state.wear_level, 4)
-    reading["runtime_hours"]  = round(state.runtime_hours, 1)
-    return reading
+    n_sub = int(np.ceil(dt))
+    for _ in range(n_sub):
+        tw.step(dt / n_sub)
 
-
-# ─── Toplu/eğitim verileri ────────────────────────────────────────────
-def _stateless_reading_for_phase(equipment_id: str, phase: str,
-                                  wear: float = 0.1) -> dict:
-    """Durum makinesine dokunmadan, belirli bir faz + yıpranma için
-    tek seferlik okuma — eğitim verisi üretimi için."""
-    tmp_state = EquipmentRuntimeState(cycle_phase=phase, wear_level=wear)
-    return _compute_reading(equipment_id, tmp_state)
-
-
-def _anomaly_reading(equipment_id: str) -> dict:
-    """Tek bir sensörü kesin olarak spike eden anomali okuması (IF eğitimi
-    için 'class 1' örnek)."""
-    base = _stateless_reading_for_phase(
-        equipment_id,
-        phase=np.random.choice(list(PHASE_PROFILES.keys())),
-        wear=float(np.random.uniform(0.1, 0.4)),
-    )
-    fault = np.random.choice(["overheat", "vibration_spike",
-                              "overcurrent", "pressure_surge"])
-    if fault == "overheat":
-        base["temperature"] *= np.random.uniform(1.3, 1.55)
-    elif fault == "vibration_spike":
-        base["vibration"]   *= np.random.uniform(2.0, 3.0)
-    elif fault == "overcurrent":
-        base["current"]     *= np.random.uniform(1.4, 1.7)
-    elif fault == "pressure_surge":
-        base["pressure"]    *= np.random.uniform(1.4, 1.8)
-    return base
+    # Arıza (D=1) → makine durur; duruş sonrası düzeltici bakım
+    while tw.failures:
+        f = tw.failures.pop(0)
+        tw.down_s[0] = FAIL_DOWNTIME_S
+        _events[equipment_id].append({"tip": "ARIZA", "bilesen": f["component"],
+                                      "op_hours": f["op_hours"], "zaman": now.isoformat()})
+    if tw.down_s[0] > 0 and tw.down_s[0] <= dt + 1e-9:
+        failed = [c for c, i in _CI.items() if tw.D[0, i] >= 1.0]
+        for c in failed:
+            tw.repair(0, c)
+        if failed:
+            _events[equipment_id].append({"tip": "düzeltici_bakım", "bilesenler": failed,
+                                          "op_hours": float(tw.op_hours[0]),
+                                          "zaman": now.isoformat()})
+    return _package(tw, tw.read())
 
 
-def generate_training_data(n_samples: int = 2000) -> pd.DataFrame:
+# ═════════════════════════════════════════════════════════════════════════
+# 7) EĞİTİM / DEĞERLENDİRME VERİSİ — aynı motor, çok makine
+# ═════════════════════════════════════════════════════════════════════════
+STREAM_INTERVAL_S = 3.0   # canlı yayın aralığı (main.py) ile aynı
+
+
+def simulate_streams(equipment_id: str, n_units: int, duration_s: float,
+                     interval_s: float = STREAM_INTERVAL_S, seed: int = 0,
+                     mode: str = "healthy", manual_prob: float = 0.25,
+                     aging_accel: float = AGING_ACCEL, warmup_s: float = 600.0) -> dict:
+    """N makinelik filo akışı üretir.
+
+    mode:
+      "healthy"         — hiç hasar başlamaz (normal davranış modeli/IF için)
+      "run_to_failure"  — her makinede rastgele bir bileşen 0-150 saat içinde
+                          bozulmaya başlar; makine ilk arızada durur (sonrası
+                          maskelenir). Sınıflar dengeli olsun diye bileşen
+                          makineler arasında sırayla dağıtılır.
+      "natural"         — doğal kuluçka (canlı ikizle aynı)
+    manual_prob: operatörün makineyi bir süre manuel koşulda (ör. kötü yol,
+                 yokuş) tutma olasılığı — normal davranış çeşitliliği için.
+
+    Dönüş: dict(X [n,T,S], op_hours, true_rul, true_comp, max_damage, phase, valid [n,T])
     """
-    IF eğitimi için stateless örnekleme: tüm operasyon fazlarını ve
-    yıpranma seviyelerini uniform tarayıp ~%5 anomali enjekte eder.
-    """
-    rows = []
-    eq_ids = list(EQUIPMENT_PROFILES.keys())
-    phases = list(PHASE_PROFILES.keys())
+    rng = np.random.default_rng(seed + 1000)
+    tw = Fleet(equipment_id, n=n_units, seed=seed, aging_accel=aging_accel,
+               natural_faults=(mode == "natural"))
+    if mode == "run_to_failure":
+        comps = (np.arange(n_units) + rng.integers(len(COMPONENT_NAMES))) % len(COMPONENT_NAMES)
+        rng.shuffle(comps)
+        tw.onset[:] = np.inf
+        tw.onset[np.arange(n_units), comps] = tw.op_hours + rng.uniform(0, 150, n_units)
 
-    for _ in range(n_samples):
-        eq_id = np.random.choice(eq_ids)
-        # Sadece o ekipmanın tipine uygun fazlardan seç
-        eq_type = EQUIPMENT_PROFILES[eq_id]["type"]
-        # Döngü fazları + manuel seçilebilir koşullar (kotu_yol dahil) — hepsi
-        # NORMAL çalışma sayılır, IF bunları anomali olarak işaretlememeli.
-        valid_phases = list(dict.fromkeys(
-            [p for p, _ in _cycle_for(eq_type)]
-            + [p for p, _ in manual_scenarios_for(eq_type)]
-        ))
-        # "Hafif" fazlar (rölanti, boş dönüş, yokuş aşağı boş inme) normal
-        # uzayın uç köşeleridir: hız/yük düşük, soğumada sıcaklık da düşer.
-        # Eşit örneklenirse seyrek kalır ve IF onları yanlışlıkla anomali sanar
-        # (idle %20, iniş %25 sahte alarm). Gerçek operasyonda makine bu
-        # durumlarda çok zaman geçirir → eğitimde bol olmalı. 3x ağırlık:
-        # IF bu köşeleri yoğun/normal öğrenir, sahte alarm hedefi <%2.
-        # Ayrıca "dumping" hidrolik basıncı ani spike yapan geçici bir köşedir;
-        # o da seyrek kalırsa sahte alarm üretir → aynı gerekçeyle yoğunlaştırılır.
-        BOOST = ("idle", "idle_waiting", "returning_empty",
-                 "descending_empty", "accelerating_empty", "dumping")
-        w = np.array([3.0 if p in BOOST else 1.0 for p in valid_phases])
-        phase = np.random.choice(valid_phases, p=w / w.sum())
-        wear  = float(np.random.uniform(0.05, 0.5))
-        is_anomaly = np.random.random() < 0.05
-        if is_anomaly:
-            reading = _anomaly_reading(eq_id)
-        else:
-            reading = _stateless_reading_for_phase(eq_id, phase, wear)
-        reading["equipment_id"]   = eq_id
-        reading["equipment_type"] = eq_type
-        reading["phase"]          = phase
-        reading["wear_level"]     = round(wear, 4)
-        reading["is_anomaly"]     = is_anomaly
-        rows.append(reading)
-    return pd.DataFrame(rows)
+    acc = tw.accel
+    tw.accel = 0.0
+    for _ in range(int(warmup_s)):
+        tw.step(1.0)
+    tw.accel = acc
+
+    man_choices = [ALL_PHASES.index(p) for p, _ in manual_scenarios_for(tw.type)]
+    man_left = np.zeros(n_units)
+    T = int(duration_s // interval_s)
+    S = len(SENSORS)
+    X = np.zeros((n_units, T, S), np.float32)
+    oph = np.zeros((n_units, T), np.float32)
+    rul = np.zeros((n_units, T), np.float32)
+    comp = np.zeros((n_units, T), np.int16)
+    dmax = np.zeros((n_units, T), np.float32)
+    phase = np.zeros((n_units, T), np.int16)
+    valid = np.ones((n_units, T), bool)
+    alive = np.ones(n_units, bool)
+    n_sub = int(np.ceil(interval_s))
+    for t in range(T):
+        # Operatör manuel koşul seçimi (normal çalışma çeşitliliği)
+        if manual_prob > 0:
+            start = (man_left <= 0) & (tw.manual >= 0)
+            tw.manual[start] = -1
+            pick = (tw.manual < 0) & (rng.random(n_units) < manual_prob * interval_s / 600.0)
+            if pick.any():
+                tw.manual[pick] = rng.choice(man_choices, pick.sum())
+                man_left[pick] = rng.uniform(40, 240, pick.sum())
+            man_left -= interval_s
+        for _ in range(n_sub):
+            tw.step(interval_s / n_sub)
+        r = tw.read()
+        X[:, t, :] = np.stack([r[k] for k in SENSORS], axis=1)
+        oph[:, t] = tw.op_hours
+        tr, tc = tw.true_rul()
+        rul[:, t], comp[:, t] = tr, tc
+        dmax[:, t] = tw.D.max(axis=1)
+        phase[:, t] = tw._phase_idx()
+        if mode == "run_to_failure":
+            failed_now = tw.D.max(axis=1) >= 1.0
+            valid[:, t] = alive
+            alive &= ~failed_now
+            if not alive.any():
+                valid[:, t + 1:] = False
+                X, oph, rul, comp, dmax, phase, valid = (a[:, :t + 1] for a in
+                                                         (X, oph, rul, comp, dmax, phase, valid))
+                break
+    return {"X": X, "op_hours": oph, "true_rul": rul, "true_comp": comp,
+            "max_damage": dmax, "phase": phase, "valid": valid, "sensors": SENSORS,
+            "equipment_id": equipment_id, "interval_s": interval_s}
 
 
-def generate_historical(hours: int = 24, interval_seconds: int = 30) -> pd.DataFrame:
-    """24 saatlik canlı stream taklidi — durum makinesini gerçek zamanda
-    fast-forward eder, hypertable seed için kullanılır."""
+def generate_historical(hours: float = 24, interval_seconds: int = 30,
+                        seed: int = 0) -> pd.DataFrame:
+    """Geçmiş akış taklidi (seed.py) — her makine için ayrı ikiz, gerçek zaman."""
     rows = []
     now = datetime.now(timezone.utc)
-    t   = now - timedelta(hours=hours)
-    # Geçici state'ler kullan (asıl runtime state'lere dokunma)
-    temp_states: Dict[str, EquipmentRuntimeState] = {
-        eq: EquipmentRuntimeState(
-            wear_level    = float(np.random.uniform(0.05, 0.20)),
-            runtime_hours = float(np.random.uniform(150, 800)),
-            last_update   = t,
-        )
-        for eq in EQUIPMENT_PROFILES
-    }
-    while t <= now:
-        for eq_id, st in temp_states.items():
-            _advance_state(st, EQUIPMENT_PROFILES[eq_id]["type"],
-                           dt_seconds=interval_seconds)
-            r = _compute_reading(eq_id, st)
-            r["equipment_id"]   = eq_id
-            r["equipment_type"] = EQUIPMENT_PROFILES[eq_id]["type"]
-            r["time"]           = t
+    t0 = now - timedelta(hours=hours)
+    steps = int(hours * 3600 // interval_seconds)
+    for k, eq_id in enumerate(EQUIPMENT_PROFILES):
+        tw = Fleet(eq_id, n=1, seed=seed + k, natural_faults=NATURAL_FAULTS)
+        n_sub = int(np.ceil(interval_seconds))
+        for s in range(steps):
+            for _ in range(n_sub):
+                tw.step(interval_seconds / n_sub)
+            if tw.failures:
+                tw.failures.clear()
+                for c, i in _CI.items():
+                    if tw.D[0, i] >= 1.0:
+                        tw.repair(0, c)
+            r = _package(tw, tw.read())
+            r["time"] = t0 + timedelta(seconds=s * interval_seconds)
             rows.append(r)
-        t += timedelta(seconds=interval_seconds)
     return pd.DataFrame(rows)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 6) RUL — Kalan Faydalı Ömür Eğitim Verisi (run-to-failure)
-# ═════════════════════════════════════════════════════════════════════════
-# Kritik eşik çarpanları (normal üst sınırın katı):
-# Sensör bu eşiğe ulaşınca makine "arızalı" sayılır.
-CRITICAL_MULTIPLIERS = {
-    "temperature": 1.45,
-    "vibration":   2.8,
-    "current":     1.6,
-    "pressure":    1.7,
-}
-
-DEGRADATION_MODES = {
-    "rulman_asinmasi": {"primary": "vibration",   "secondary": "temperature", "sec_factor": 0.45},
-    "asiri_isinma":    {"primary": "temperature", "secondary": "current",     "sec_factor": 0.40},
-    "asiri_akim":      {"primary": "current",     "secondary": "temperature", "sec_factor": 0.35},
-    "basinc_kaybi":    {"primary": "pressure",    "secondary": None,          "sec_factor": 0.0},
-}
-
-STEP_HOURS = 0.5   # her run-to-failure adımı 30 dakikalık ufuk
-
-
-def critical_thresholds(equipment_id: str) -> dict:
-    """Ekipmanın her sensörü için arıza (kritik) eşiği."""
-    profile = EQUIPMENT_PROFILES[equipment_id]
-    return {
-        key: round(profile[key][1] * mult, 2)
-        for key, mult in CRITICAL_MULTIPLIERS.items()
-    }
-
-
-def generate_degradation_run(equipment_id: str, steps: int = None,
-                              mode: str = None) -> pd.DataFrame:
-    """
-    Tek bir 'sağlıklı → arıza' run-to-failure trajektorisi üretir.
-    Bir sensör normal seviyeden kritik eşiğe doğru üstel hızlanan bir
-    eğride kayar. RUL LSTM bu run'larla eğitilir.
-    """
-    profile = EQUIPMENT_PROFILES[equipment_id]
-    if steps is None: steps = int(np.random.randint(80, 200))
-    if mode  is None: mode  = np.random.choice(list(DEGRADATION_MODES.keys()))
-    spec = DEGRADATION_MODES[mode]
-    crit = critical_thresholds(equipment_id)
-
-    rows = []
-    for i in range(steps):
-        progress = i / max(1, steps - 1)                  # 0 → 1
-        sev      = progress ** 1.7                         # üstel hızlanma
-
-        # Sağlıklı taban okumayı durum makinesine bağlı olmayan basit
-        # rastgele örnek olarak al (rastgele bir fazdan):
-        base = _stateless_reading_for_phase(
-            equipment_id,
-            phase=np.random.choice([p for p, _ in _cycle_for(profile["type"])]),
-            wear=0.1 + progress * 0.5,
-        )
-
-        prim = spec["primary"]
-        if prim == "pressure":
-            lo = profile["pressure"][0]
-            target_low = lo * 0.45
-            base["pressure"] = float(
-                lo - (lo - target_low) * sev
-                + np.random.normal(0, 0.08)
-            )
-        else:
-            hi = profile[prim][1]
-            base[prim] = float(
-                hi + (crit[prim] - hi) * sev
-                + np.random.normal(0, (crit[prim] - hi) * 0.04)
-            )
-
-        sec = spec["secondary"]
-        if sec:
-            hi_s = profile[sec][1]
-            base[sec] = float(
-                base[sec] + (crit[sec] - hi_s) * sev * spec["sec_factor"]
-            )
-
-        base["equipment_id"]   = equipment_id
-        base["equipment_type"] = profile["type"]
-        base["mode"]           = mode
-        base["health"]         = round(max(0.0, 1.0 - progress), 4)
-        base["rul_hours"]      = round((steps - 1 - i) * STEP_HOURS, 3)
-        rows.append(base)
-
-    return pd.DataFrame(rows)
-
-
-def generate_healthy_run(equipment_id: str, steps: int = None) -> pd.DataFrame:
-    """Sağlıklı run — tüm pencereler max RUL ile etiketlenir."""
-    profile = EQUIPMENT_PROFILES[equipment_id]
-    if steps is None: steps = int(np.random.randint(40, 80))
-    # Sağlıklı taban: döngü fazları + manuel koşullar (kotu_yol dahil) → RUL
-    # modeli bu koşulları da "sağlıklı" normalde görsün.
-    valid_phases = list(dict.fromkeys(
-        [p for p, _ in _cycle_for(profile["type"])]
-        + [p for p, _ in manual_scenarios_for(profile["type"])]
-    ))
-    rows = []
-    for _ in range(steps):
-        r = _stateless_reading_for_phase(
-            equipment_id,
-            phase=np.random.choice(valid_phases),
-            wear=float(np.random.uniform(0.05, 0.25)),
-        )
-        r["equipment_id"]   = equipment_id
-        r["equipment_type"] = profile["type"]
-        r["mode"]           = "saglikli"
-        r["health"]         = 1.0
-        r["rul_hours"]      = float(STEP_HOURS * 200)
-        rows.append(r)
-    return pd.DataFrame(rows)
-
-
-def generate_rul_dataset(runs_per_equipment: int = 40) -> pd.DataFrame:
-    """RUL eğitim seti: her ekipman için degradasyon + sağlıklı run'lar."""
-    frames = []
-    rid = 0
-    for eq_id in EQUIPMENT_PROFILES:
-        for _ in range(runs_per_equipment):
-            df = generate_degradation_run(eq_id)
-            df["run_id"] = rid; rid += 1
-            frames.append(df)
-        for _ in range(runs_per_equipment // 2):
-            df = generate_healthy_run(eq_id)
-            df["run_id"] = rid; rid += 1
-            frames.append(df)
-    return pd.concat(frames, ignore_index=True)
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# 7) GELECEKTEKİ DURUM PROJEKSİYONU (jüri demosu)
+# 8) GELECEK PROJEKSİYONU — hasar modelini ileri sar
 # ═════════════════════════════════════════════════════════════════════════
 def project_future(equipment_id: str, hours: float) -> dict:
-    """
-    "Bu makine şu an gibi N saat daha çalışırsa ne durumda olur?" sorusunun
-    cevabı. Mevcut durumun bir kopyası üzerinde durum makinesini
-    fast-forward eder, projeksiyon değerleri döner.
-    """
+    """"Bu makine N saat daha (ortalama döngü stresiyle) çalışırsa?" Hasar
+    denklemini analitik olarak ileri sarar; bir kopyada kısa fiziksel
+    simülasyonla örnek sensör okuması üretir."""
     if equipment_id not in EQUIPMENT_PROFILES:
         return {"hata": f"Bilinmeyen ekipman: {equipment_id}"}
-
-    current = _get_state(equipment_id)
-    # Kopya — gerçek state'e dokunmayalım
-    sim = EquipmentRuntimeState(
-        cycle_phase   = current.cycle_phase,
-        phase_elapsed = current.phase_elapsed,
-        runtime_hours = current.runtime_hours,
-        wear_level    = current.wear_level,
-        last_update   = current.last_update,
-    )
-    eq_type = EQUIPMENT_PROFILES[equipment_id]["type"]
-    # 60 saniye adımlarla fast-forward (hız/doğruluk dengesi)
-    seconds_left = hours * 3600.0
-    step = 60.0
-    while seconds_left > 0:
-        _advance_state(sim, eq_type, min(step, seconds_left))
-        seconds_left -= step
-    sample = _compute_reading(equipment_id, sim)
+    tw = copy.deepcopy(get_twin(equipment_id))
+    tw.rng = np.random.default_rng()
+    h = float(hours)
+    gs = tw.g[0] * tw.s_avg
+    start = np.maximum(tw.op_hours[0], tw.onset[0])
+    grow_h = np.clip(tw.op_hours[0] + h - start, 0, None)
+    D_new = np.where(np.isfinite(tw.onset[0]),
+                     np.minimum(1.0, (tw.D[0] + D_OFFSET) * np.exp(gs * grow_h) - D_OFFSET),
+                     tw.D[0])
+    D_new = np.maximum(D_new, tw.D[0])
+    tw.D[0] = D_new
+    tw.op_hours[0] += h
+    tw.accel = 0.0
+    for _ in range(300):
+        tw.step(1.0)
+    sample = _package(tw, tw.read())
+    worst = int(np.argmax(D_new))
+    w = float(D_new[worst])
+    arizali = [COMPONENT_NAMES[i] for i in np.nonzero(D_new >= 1.0)[0]]
     return {
-        "equipment_id":           equipment_id,
-        "saat_sonra":             hours,
-        "projekte_calisma_saati": round(sim.runtime_hours, 1),
-        "projekte_yipranma":      round(sim.wear_level, 3),
-        "yipranma_yuzde":         round(sim.wear_level * 100, 1),
-        "ornek_sensor_okuma":     sample,
-        "uyari": "Yıpranma %50'yi aşarsa erken bakım önerilir; %80 üzeri kritik."
-                 if sim.wear_level > 0.5 else
-                 "Yıpranma normal aralıkta — planlı bakım takvimi yeterli.",
+        "equipment_id": equipment_id,
+        "saat_sonra": h,
+        "projekte_calisma_saati": round(float(tw.op_hours[0]), 1),
+        "projekte_yipranma": round(w, 3),
+        "yipranma_yuzde": round(w * 100, 1),
+        "bilesen_hasar": {c: round(float(D_new[i]), 3) for c, i in _CI.items()},
+        "en_riskli_bilesen": COMPONENT_NAMES[worst],
+        "arizalanacak_bilesenler": arizali,
+        "ornek_sensor_okuma": sample,
+        "not": "Projeksiyon yalnız şu an BAŞLAMIŞ hasarları ilerletir; henüz "
+               "başlamamış (kuluçkadaki) arızalar öngörülemez.",
+        "uyari": ("Projeksiyon süresi içinde arıza bekleniyor: " + ", ".join(arizali)) if arizali else
+                 ("Hasar %50'yi aşıyor — erken bakım önerilir." if w > 0.5 else
+                  "Yıpranma normal aralıkta — planlı bakım takvimi yeterli."),
     }

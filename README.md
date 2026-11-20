@@ -44,10 +44,13 @@ data into a decision and triggers an automated action chain.
 
 ## Key capabilities
 
-- **Real-time anomaly detection** — an unsupervised Isolation Forest per machine, calibrated to a 0–1
-  score, with a consecutive-confirmation rule that eliminates noise spikes.
-- **Remaining useful life (RUL) prediction** — an LSTM regressor over a 20-step × 5-feature window,
-  producing an hour-scale estimate with planned (<24 h) and urgent (<8 h) maintenance thresholds.
+- **Physics-based digital twin** — duty cycle, thermal inertia and time-evolving damage processes for 8
+  components; faults are not "injected and gone", they physically develop. Live stream and training
+  data come from the same engine.
+- **Real-time anomaly detection** — Isolation Forest plus a residual control limit on normal-behaviour-
+  model (NBM) residuals, with per-machine commissioning baseline and 3-reading confirmation.
+- **Remaining useful life (RUL) prediction** — an LSTM over operating-hour snapshot sequences; RUL in
+  hours plus the component expected to fail (8 classes + healthy).
 - **RAG technical assistant** — manufacturer service manuals embedded into a Qdrant vector database;
   natural-language questions are answered from source documentation. Below the similarity threshold the
   system says *"no reliable match found"* rather than hallucinating.
@@ -138,7 +141,8 @@ Then open **<http://localhost:8000>**.
 **Training the models** (optional — pre-trained models ship with the repository):
 
 ```bash
-python ml/train.py            # Isolation Forest + LSTM + RUL models
+python ml/train.py            # NBM + Isolation Forest + RUL LSTM + forecaster (~6 min)
+python ml/evaluate.py         # honest scorecard on unseen machines
 ```
 
 ## Repository layout
@@ -163,19 +167,21 @@ docs/
 
 ## Validation
 
-Automated tests across three machines and all operating conditions:
+`ml/evaluate.py` measures on freshly generated machines never seen in training, using the exact live
+decision rule (results: `digital-twin/ml/artifacts/evaluation.json`):
 
 | Test | Scope | Result |
 |---|---|---|
-| False alarms, normal operation | 2,250 sensor readings | **0** (0.00%) |
-| Fault detection, event-based | 480 events, 8 fault types | **480** (100%) |
-| End-to-end pipeline | Simulator → MQTT → DB → anomaly → RUL → assistant | 98,000+ readings, uninterrupted |
-| Detection latency | 3 s publish interval, 3-reading confirmation | ~10 s from onset to notification |
+| False alarms, healthy fleet | 240 machines, ~144k operating hours | loader 0.36 · truck 0.10 episodes / 1000 h |
+| Detected before failure | 480 run-to-failure units, 8 components | 100% · median lead time 64–67 h |
+| RUL error (all windows) | 20,466 windows, 400 machines | LSTM RMSE 21.3 h · GBM 24.5 · constant 50.4 |
+| RUL error (last 30 h) | 3,067 windows | LSTM RMSE 8.8 h · GBM 13.2 |
+| Component diagnosis (RUL < 72 h) | 9 classes | 77.5% (main confusion: cooling ↔ engine overheating) |
+| 30 s ahead forecast | 5 sensors vs. persistence baseline | 19–78% lower MAE |
 
-> **Transparency:** these results were obtained on physics-grounded simulation data derived from
-> manufacturer specifications — not real field data. A production deployment requires retraining and
-> re-validation on site-collected data. The architecture is designed so this can be done with a single
-> command.
+> **Transparency:** these results are on physics-based simulation data — not field data; the
+> simulator's assumptions (damage physics, noise, unit-to-unit variation) directly shape them.
+> Architecture and error analysis: [`docs/V2_MIMARI.md`](docs/V2_MIMARI.md).
 
 ## Validated failure scenarios
 
@@ -201,11 +207,9 @@ themselves are not redistributed here.
 
 **External reference dataset.** [`predictive_maintenance.csv`](digital-twin/data/predictive_maintenance.csv)
 is the *Machine Predictive Maintenance Classification* dataset by **shivamb** on Kaggle, derived from
-the UCI *AI4I 2020 Predictive Maintenance Dataset* (Matzka, S., 2020), licensed **CC BY 4.0**.
-
-It is **not used to train any model.** The only value taken from it is the realistic failure rate
-(mean of the `Target` column, ≈ 3.4%), which calibrates the `contamination` parameter of the Isolation
-Forest — see [`ml/train.py`](digital-twin/ml/train.py) → `_kaggle_failure_rate()`.
+the UCI *AI4I 2020 Predictive Maintenance Dataset* (Matzka, S., 2020), licensed **CC BY 4.0**. As of
+v2 it is not used by any model (v1 took only the `contamination` rate from it; removed because the
+equipment type differs).
 
 Full details: [`digital-twin/data/DATA_SOURCES.md`](digital-twin/data/DATA_SOURCES.md)
 

@@ -63,7 +63,7 @@ async def add_reading(
     yeni_olay = yeni_olay_mu(data.equipment_id, result["is_anomaly"])
 
     record = SensorReading(
-        **data.model_dump(),
+        **data.model_dump(exclude={"op_hours"}),
         is_anomaly=result["is_anomaly"],
         anomaly_score=result["anomaly_score"],
     )
@@ -200,3 +200,24 @@ async def simulate_reading(
                                force_gas=force_gas, fault_type=ariza_tipi)
     schema  = SensorReadingCreate(**reading)
     return await add_reading(schema, background_tasks, db)
+
+
+@router.post("/maintenance/{equipment_id}")
+async def do_maintenance(equipment_id: str, bilesen: str | None = None):
+    """Bakım: bileşeni (ya da hepsini) yenile — hasar sıfırlanır.
+    Canlı Test'te başlatılan arıza artık kendiliğinden kaybolmaz; bakımla giderilir."""
+    from data.simulator import EQUIPMENT_PROFILES, maintenance
+    if equipment_id not in EQUIPMENT_PROFILES:
+        return {"hata": "bilinmeyen araç"}
+    return maintenance(equipment_id, bilesen)
+
+
+@router.get("/twin/{equipment_id}")
+async def twin_state(equipment_id: str):
+    """Dijital ikizin iç durumu (bileşen hasarları, GERÇEK RUL, olay günlüğü).
+    Yalnız simülasyonda bilinen değerler içerir — değerlendirme/hata ayıklama içindir."""
+    from data.simulator import EQUIPMENT_PROFILES, twin_status
+    if equipment_id not in EQUIPMENT_PROFILES:
+        return {"hata": "bilinmeyen araç"}
+    return twin_status(equipment_id)
+

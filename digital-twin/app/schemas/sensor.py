@@ -28,6 +28,7 @@ class SensorReadingCreate(BaseModel):
     rpm: Optional[float] = None      # devir (d/dk)
     torque: Optional[float] = None   # tork (Nm)
     fuel: Optional[float] = None     # yakıt tüketimi (L/sa)
+    op_hours: Optional[float] = None # motor saat sayacı (RUL özet pencereleri için; DB'ye yazılmaz)
 
 
 class SensorReadingOut(SensorReadingCreate):

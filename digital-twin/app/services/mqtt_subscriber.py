@@ -27,41 +27,25 @@ _client: mqtt.Client = None
 _loop: asyncio.AbstractEventLoop = None
 
 
-async def otomatik_tahmin(db, eq_id: str, guncel: list) -> tuple:
+async def otomatik_tahmin(db, eq_id: str, guncel: list = None) -> tuple:
     """OTOMATİK ARIZA TAHMİNİ (anomali → RUL zinciri) — paylaşılan yardımcı.
 
-    Anomali yakalanınca sistem kendi kendine LSTM'e sorar: "hangi bileşen
-    sorunlu, bu gidişle ne kadar ömür kaldı?" Hem MQTT yolu (canlı akış)
-    hem HTTP yolu (Canlı Test) bu TEK fonksiyonu kullanır.
+    Anomali yakalanınca RUL LSTM'e sorulur: "hangi bileşen bozuluyor, ne kadar
+    ömür kaldı?" Hem MQTT yolu hem HTTP yolu bu TEK fonksiyonu kullanır.
     Dönüş: (uyarı metnine eklenecek cümle, ham tahmin dict'i)"""
-    from sqlalchemy import select, desc as sql_desc
-    from app.models.sensor import SensorReading
-    from app.services.lstm_predictor import predict_rul, SEQ_LEN
+    from app.services.lstm_predictor import predict_rul
     try:
-        rows = await db.execute(
-            select(SensorReading)
-            .where(SensorReading.equipment_id == eq_id)
-            .order_by(sql_desc(SensorReading.time)).limit(SEQ_LEN - 1))
-        seq = [[r.temperature, r.vibration, r.pressure, r.current, r.speed]
-               for r in reversed(rows.scalars().all())]
-        seq.append(guncel)
-        if len(seq) < SEQ_LEN:
-            return "", {}
-        rul = await asyncio.get_event_loop().run_in_executor(
-            None, predict_rul, seq, eq_id)
+        rul = await asyncio.get_event_loop().run_in_executor(None, predict_rul, eq_id)
         if "rul_saat" not in rul:
             return "", {}
-        # Ani sıçrama ile yavaş yıpranma ayrımı — mesaj ona göre kurulur
-        if rul["rul_saat"] >= 90:
-            metin = (f" || OTOMATİK TAHMİN → Şüpheli bileşen: {rul['baskin_sensor']} "
-                     f"(kritiğe yakınlık %{rul['sensor_doluluk']}). "
-                     f"Ani sapma karakterinde — kalıcı yıpranma trendi görülmedi; "
-                     f"bileşen kontrolü önerilir.")
+        if rul.get("ariza"):
+            metin = (f" || OTOMATİK TAHMİN → Olası arıza: {rul['ariza']} "
+                     f"({rul['sistem']}); tahmini kalan ömür ~{rul['rul_saat']:.0f} saat "
+                     f"({rul['durum']}).")
         else:
-            metin = (f" || OTOMATİK TAHMİN → Şüpheli bileşen: {rul['baskin_sensor']} "
-                     f"(kritiğe yakınlık %{rul['sensor_doluluk']}) · "
-                     f"tahmini kalan ömür ~{rul['rul_saat']} saat ({rul['durum']}) — "
-                     f"bakım planlaması önerilir.")
+            metin = (f" || OTOMATİK TAHMİN → Kalıcı bozulma trendi henüz görülmüyor "
+                     f"(RUL ~{rul['rul_saat']:.0f} saat); en büyük sapma: "
+                     f"{rul['baskin_sensor']}. Kısa süreli sapma olabilir, izlenmeli.")
         return metin, rul
     except Exception as e:
         print(f"  otomatik RUL tahmini yapılamadı: {e}")

@@ -38,20 +38,13 @@ async def _rapor_verisi(db: AsyncSession, saat: int):
               "resolved": l.resolved} for l in rows.scalars().all()]
 
     # LSTM: her aracın güncel kalan ömür durumu
-    from app.services.lstm_predictor import predict_rul, SEQ_LEN
+    from app.services.lstm_predictor import predict_rul
     from data.simulator import EQUIPMENT_PROFILES
     rul_bilgileri = []
     for eq_id in EQUIPMENT_PROFILES:
-        r = await db.execute(select(SensorReading)
-            .where(SensorReading.equipment_id == eq_id)
-            .order_by(desc(SensorReading.time)).limit(SEQ_LEN))
-        okumalar = list(reversed(r.scalars().all()))
-        if len(okumalar) >= SEQ_LEN:
-            seq = [[o.temperature, o.vibration, o.pressure, o.current, o.speed]
-                   for o in okumalar]
-            t = predict_rul(seq, eq_id)
-            if "rul_saat" in t:
-                rul_bilgileri.append({"equipment_id": eq_id, **t})
+        t = predict_rul(eq_id)
+        if "rul_saat" in t:
+            rul_bilgileri.append({"equipment_id": eq_id, **t})
 
     # RAG: son anomalilere karşılık gelen teknik doküman önerileri
     rag_onerileri, gorulen = [], set()

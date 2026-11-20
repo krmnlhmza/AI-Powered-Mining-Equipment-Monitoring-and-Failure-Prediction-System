@@ -39,10 +39,13 @@ başlatmasıdır.
 
 ## Temel yetenekler
 
-- **Gerçek zamanlı anomali tespiti** — her makine için ayrı, denetimsiz Isolation Forest; 0–1 aralığına
-  kalibre skor ve gürültü sıçramalarını eleyen ardışık teyit kuralı.
-- **Kalan faydalı ömür (RUL) tahmini** — 20 adım × 5 özellik penceresi üzerinde LSTM regresör; saat
-  cinsinden tahmin, planlı (<24 sa) ve acil (<8 sa) bakım eşikleriyle.
+- **Fiziksel dijital ikiz** — operasyon döngüsü, ısıl eylemsizlik ve 8 bileşenin zamanla büyüyen hasar
+  süreçleri; arızalar "enjekte edilip kaybolmaz", fiziksel olarak gelişir. Canlı akış ve eğitim verisi
+  aynı motordan üretilir.
+- **Gerçek zamanlı anomali tespiti** — normal davranış modeli (NBM) artıkları üzerinde Isolation Forest
+  + artık kontrol limiti; makineye özgü devreye alma kalibrasyonu ve 3 okumalık ardışık teyit.
+- **Kalan faydalı ömür (RUL) tahmini** — çalışma-saati özet dizisi üzerinde LSTM; saat cinsinden kalan
+  ömür ve arızalanması beklenen bileşen (8 sınıf + sağlıklı).
 - **RAG teknik asistan** — üretici servis manuelleri Qdrant vektör veritabanına gömülür; doğal dil
   soruları kaynak dokümandan yanıtlanır. Benzerlik eşiğinin altında sistem cevap uydurmaz,
   *"güvenilir eşleşme bulunamadı"* der.
@@ -133,7 +136,8 @@ Ardından **<http://localhost:8000>** adresini açın.
 **Modelleri eğitmek** (isteğe bağlı — eğitilmiş modeller depoda mevcuttur):
 
 ```bash
-python ml/train.py            # Isolation Forest + LSTM + RUL modelleri
+python ml/train.py            # NBM + Isolation Forest + RUL LSTM + tahminci (~6 dk)
+python ml/evaluate.py         # dürüst karne (yeni makinelerde)
 ```
 
 ## Depo yapısı
@@ -158,18 +162,21 @@ docs/
 
 ## Doğrulama
 
-Üç makine ve tüm çalışma koşulları üzerinde yürütülen otomatik testler:
+`ml/evaluate.py`, eğitimde hiç kullanılmamış yeni sanal makinelerde, canlıdaki karar kuralının
+aynısıyla ölçer (sonuçlar: `digital-twin/ml/artifacts/evaluation.json`):
 
 | Test | Kapsam | Sonuç |
 |---|---|---|
-| Normal çalışmada yanlış alarm | 2.250 sensör okuması | **0** (%0,00) |
-| Arıza tespiti (olay bazlı) | 480 olay, 8 arıza tipi | **480** (%100) |
-| Uçtan uca akış | Simülatör → MQTT → veritabanı → anomali → RUL → asistan | 98.000+ okuma, kesintisiz |
-| Tespit gecikmesi | 3 sn yayın aralığı, 3 okumalık teyit | Başlangıçtan bildirime ~10 sn |
+| Sağlıklı filoda yanlış alarm | 240 makine, ~144.000 çalışma saati | yükleyici 0,36 · kamyon 0,10 olay / 1000 sa |
+| Arızadan önce yakalama | 480 run-to-failure, 8 bileşen | %100 · medyan öncü süre 64–67 sa |
+| RUL hatası (tüm pencereler) | 20.466 pencere, 400 makine | LSTM RMSE 21,3 sa · GBM 24,5 · sabit 50,4 |
+| RUL hatası (son 30 sa) | 3.067 pencere | LSTM RMSE 8,8 sa · GBM 13,2 |
+| Bileşen teşhisi (RUL < 72 sa) | 9 sınıf | %77,5 (en çok karışan: soğutma ↔ motor ısınması) |
+| 30 sn ileri tahmin | 5 sensör, "değişmez" referansına karşı | MAE'de %19–78 iyileşme |
 
-> **Şeffaflık notu:** bu sonuçlar, üretici teknik değerlerine dayalı fiziksel simülasyon verisi üzerinde
-> elde edilmiştir — gerçek saha verisi değildir. Gerçek bir kurulumda modellerin sahadan toplanan veriyle
-> yeniden eğitilmesi ve doğrulanması gerekir. Mimari, bunu tek komutla yapacak şekilde tasarlanmıştır.
+> **Şeffaflık notu:** bu sonuçlar fiziksel simülasyon verisi üzerinde elde edilmiştir — gerçek saha
+> verisi değildir; simülatörün varsayımları (hasar fiziği, gürültü, makineler arası fark) sonuçları
+> doğrudan etkiler. Mimari ve hata analizi: [`docs/V2_MIMARI.md`](docs/V2_MIMARI.md).
 
 ## Doğrulanmış arıza senaryoları
 
@@ -197,11 +204,8 @@ simülatöründen üretilir; üreticinin teknik dokümanlarındaki gerçek çal�
 **Harici referans veri seti.** [`predictive_maintenance.csv`](digital-twin/data/predictive_maintenance.csv)
 dosyası, Kaggle'da **shivamb** tarafından yayımlanan *Machine Predictive Maintenance Classification*
 veri setidir; kaynağı UCI *AI4I 2020 Predictive Maintenance Dataset* (Matzka, S., 2020) olup
-**CC BY 4.0** lisanslıdır.
-
-Bu veri seti **hiçbir modeli eğitmek için kullanılmaz.** Ondan alınan tek bilgi, gerçekçi arıza oranıdır
-(`Target` sütununun ortalaması, ≈ %3,4); bu oran Isolation Forest'ın `contamination` parametresini
-kalibre eder — bkz. [`ml/train.py`](digital-twin/ml/train.py) → `_kaggle_failure_rate()`.
+**CC BY 4.0** lisanslıdır. v2 itibarıyla hiçbir modelde kullanılmamaktadır (v1'de yalnız
+`contamination` oranı buradan alınıyordu; ekipman türü farklı olduğundan kaldırıldı).
 
 Ayrıntı: [`digital-twin/data/DATA_SOURCES.md`](digital-twin/data/DATA_SOURCES.md)
 
