@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ÇankaYazılım — Maden Ekipman İzleme Sistemi</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
+<script type="module" src="/static/twin3d.js"></script>
 <style>
 /* ────────────────────────────────────────────────────────────
    TASARIM DİLİ: Zemin siyah-gri-beyaz. Renk YALNIZ veride
@@ -275,8 +277,9 @@ header .spacer{flex:1}
     </div>
 
     <div class="panel">
-      <div class="p-title"><span>2B Dijital İkiz</span><span class="mini" id="twin-status"></span></div>
-      <div class="twin-wrap">
+      <div class="p-title"><span id="twin-title">2B Dijital İkiz</span><span class="mini" id="twin-status"></span></div>
+      <div id="twin3d" style="display:none"></div>
+      <div class="twin-wrap" id="twin2d">
         <svg id="twin-svg" viewBox="0 0 900 320" data-lod="uzak"><g id="twin-world"></g></svg>
         <div class="twin-ctl">
           <button onclick="twinZoom(1.4)">+</button>
@@ -486,7 +489,7 @@ function selectVehicle(id){
   document.getElementById('rul-box').innerHTML = 'Sistem normal — aktif arıza tahmini yok.';
   window._testActive=false; window._testSeen=false;
   /* Canlı Test sırası GLOBAL: araç değişince sıfırlanmaz, kaldığı yerden devam eder */
-  buildLiveGrid(); buildSahaGrid(); twinBuild(); simChartsReset(); simMqttBadge();
+  buildLiveGrid(); buildSahaGrid(); twinSetup(); simChartsReset(); simMqttBadge();
   refreshLive();
   timers.push(setInterval(refreshLive, 2500));
   timers.push(setInterval(simChartsUpdate, 3000));
@@ -654,6 +657,7 @@ async function rulNotify(){
     const d=await r.json();
     if(!d.rul_saat && d.rul_saat!==0) return;
     const ts = new Date().toLocaleTimeString('tr-TR');
+    twin3dFromRul(d);
     const box=document.getElementById('rul-box');
     const renk = d.renk==='kirmizi'?'var(--red)':d.renk==='sari'?'var(--yellow)':'var(--green)';
     const arac = state.vehicle ? state.vehicle.ad : d.equipment_id;
@@ -686,6 +690,7 @@ const ARIZALAR = [
 async function bakimYap(){
   try{
     const r=await fetch(`${API}/sensors/maintenance/${state.vehicle.id}`,{method:'POST'});
+    _t3rul=null; if(_t3on) window.Twin3D.clearFocus();
     const d=await r.json();
     document.getElementById('rul-box').innerHTML =
       `<div class="mini">Bakım uygulandı${d.yenilenen&&d.yenilenen.length?': '+d.yenilenen.join(', '):''}. Yeni özetler biriktikçe RUL güncellenecek.</div>`;
@@ -850,7 +855,48 @@ function twinReset(){ twinScale=1; twinX=0; twinY=0; twinApply(); }
   },{passive:false});
 })();
 
+/* ── 3B ikiz (yükleyici): WebGL yoksa ya da kamyonsa 2B şema kullanılır ── */
+let _t3on = false, _t3rul = null;
+function twinSetup(){
+  _t3rul = null;
+  const kamyon = state.vehicle.id.startsWith('TH');
+  const T = window.Twin3D;
+  if(!kamyon && !T){ window.addEventListener('twin3d-ready', twinSetup, {once:true}); }
+  _t3on = !kamyon && !!T && T.supported();
+  document.getElementById('twin3d').style.display = _t3on ? '' : 'none';
+  document.getElementById('twin2d').style.display = _t3on ? 'none' : '';
+  document.getElementById('twin-title').textContent = _t3on ? '3B Dijital İkiz' : '2B Dijital İkiz';
+  if(_t3on){ T.mount(document.getElementById('twin3d'), 'loader'); }
+  else { if(T) T.unmount(); twinBuild(); }
+}
+/* Sensör artığı → şüpheli bileşen (RUL tahmini gelene kadar kaba konum) */
+const _Z2BILESEN = {vibration:'rulman', temperature:'motor_isi', current:'motor_sargi', fuel:'enjektor'};
+function twin3dFromReading(d){
+  if(!_t3on) return;
+  window.Twin3D.update(d);
+  if(_t3rul) return;                         /* model tahmini varsa o önceliklidir */
+  const z = d.sapmalar || {};
+  if(!d.is_anomaly){ window.Twin3D.clearFocus(); return; }
+  let k=null, m=0;
+  for(const s in z){ if(Math.abs(z[s])>m){ m=Math.abs(z[s]); k=s; } }
+  if(!k) return;
+  const key = k==='pressure' ? 'hidrolik_pompa' : _Z2BILESEN[k];
+  const ad = {temperature:'yağ sıcaklığı',vibration:'titreşim',pressure:'hidrolik basınç',current:'akım',fuel:'yakıt'}[k];
+  window.Twin3D.focus(key, {renk:'sari', baslik:'Anomali — şüpheli bölge',
+    alt:`En büyük artık: ${ad} (z = ${z[k].toFixed(1)})`, rul:'Kalan ömür modeli değerlendiriyor…'});
+}
+function twin3dFromRul(d){
+  if(!_t3on) return;
+  const p = Object.assign({}, d.bilesen_olasilik||{}); delete p.saglikli;
+  const key = Object.keys(p).sort((a,b)=>p[b]-p[a])[0];
+  if(!d.ariza || !key){ _t3rul=null; return; }
+  _t3rul = key;
+  window.Twin3D.focus(key, {renk: d.renk==='kirmizi'?'kirmizi':'sari', baslik:`${d.durum} · ${d.ariza}`,
+    alt:`${d.sistem||''} · model olasılığı %${Math.round(p[key]*100)}`, rul:`Tahmini kalan ömür ~${Math.round(d.rul_saat)} sa`});
+}
+
 function twinUpdate(d){
+  twin3dFromReading(d);
   if(!document.getElementById('tw-v-motor')) return;
   const lim = LIMITS[state.vehicle.id.startsWith('TH')?'truck':'loader'];
   document.getElementById('tw-v-motor').textContent =
