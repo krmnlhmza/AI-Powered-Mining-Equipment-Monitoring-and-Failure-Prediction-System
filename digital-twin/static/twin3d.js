@@ -1,11 +1,12 @@
 /*
- * 3B Dijital İkiz — Sandvik LH517i benzeri yeraltı yükleyici (LHD)
+ * 3B Dijital İkiz — Sandvik LH517i benzeri yükleyici (LHD) ve TH551i benzeri kamyon
  * ─────────────────────────────────────────────────────────────────
  * Model tamamen koddan üretilir (dış model/marka/logo yok); ölçüler üretici
- * verisine yakındır: ~11,8 m boy, 3,1 m en, 2,8 m yükseklik, ~1,95 m lastik.
+ * verisine yakındır. Yükleyici ~11,8 m × 3,1 m, kamyon ~10,4 m × 3,3 m.
+ * Sahne stüdyo zeminidir (siyah fon, düz zemin) — araç stantta sergilenir gibi.
  *
  *   Twin3D.supported()                 → WebGL var mı
- *   Twin3D.mount(el, tip)              → sahneyi kur (tip: "loader")
+ *   Twin3D.mount(el, tip)              → sahneyi kur (tip: "loader" | "truck")
  *   Twin3D.update(okuma)               → canlı veri (hız, faz, sensör etiketleri)
  *   Twin3D.focus(bilesen, bilgi)       → kamerayı bileşene götür, vurgula
  *   Twin3D.clearFocus()                → genel görünüme dön
@@ -22,17 +23,30 @@ import { RoundedBoxGeometry } from './vendor/three/RoundedBoxGeometry.js';
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
 // ── Bileşen kataloğu: kamera pozu, odak noktası, iç parça mı (kaput saydamlaşır)
-const COMP = {
+const COMP_LOADER = {
   rulman:         { ad: 'Rulman aşınması',            yer: 'Ön aks — tekerlek göbeği',  cam: V(5.6, 1.5, 5.2),  tgt: V(2.5, 1.0, 1.2),  ic: false },
   fren:           { ad: 'Fren sürtmesi / ısınma',      yer: 'Arka aks — ıslak disk fren', cam: V(0.6, 1.4, 5.0),  tgt: V(-1.9, 1.0, 1.2), ic: false },
-  hidrolik_pompa: { ad: 'Hidrolik pompa arızası',      yer: 'Hidrolik sistem — pompa',    cam: V(-1.3, 1.35, 5.0), tgt: V(-0.15, 0.95, 0.62), ic: false },
+  hidrolik_pompa: { ad: 'Hidrolik pompa arızası',      yer: 'Hidrolik sistem — pompa',    cam: V(-1.3, 1.35, 5.0), tgt: V(-0.15, 0.95, 0.84), ic: false },
   transmisyon:    { ad: 'Transmisyon arızası',         yer: 'Güç aktarma — şanzıman',     cam: V(-0.75, 0.65, 4.5), tgt: V(-0.8, 0.9, 0.0), ic: false },
   motor_isi:      { ad: 'Motor aşırı ısınması',        yer: 'Motor bloğu',                cam: V(-2.0, 4.4, 5.4), tgt: V(-3.7, 1.8, 0.0), ic: true  },
   enjektor:       { ad: 'Enjektör / yanma arızası',    yer: 'Motor — enjektör hattı',     cam: V(-2.6, 4.6, 3.4), tgt: V(-3.7, 2.15, 0.0), ic: true },
   motor_sargi:    { ad: 'Tahrik motoru sargı arızası', yer: 'Tahrik motoru / alternatör', cam: V(-1.2, 2.8, 4.4), tgt: V(-2.75, 1.65, 0.55), ic: true },
   sogutma:        { ad: 'Soğutma sistemi arızası',     yer: 'Radyatör / fan',             cam: V(-9.6, 2.4, 3.8), tgt: V(-5.3, 1.7, 0.0), ic: false },
 };
-const HOME = { cam: V(5.8, 3.3, 12.6), tgt: V(-0.3, 1.25, 0) };
+const HOME_LOADER = { cam: V(5.8, 3.3, 12.6), tgt: V(-0.3, 1.25, 0) };
+
+// Kamyon: kabin sağda (+z), motor solda (−z) — motor odakları sol taraftan bakar
+const COMP_TRUCK = {
+  rulman:         { ad: 'Rulman aşınması',            yer: 'Ön aks — tekerlek göbeği',  cam: V(6.4, 1.6, 5.6),  tgt: V(3.3, 1.06, 1.3),  ic: false },
+  fren:           { ad: 'Fren sürtmesi / ısınma',      yer: 'Arka aks — ıslak disk fren', cam: V(0.6, 1.5, 5.4),  tgt: V(-2.3, 1.06, 1.3), ic: false },
+  hidrolik_pompa: { ad: 'Hidrolik pompa arızası',      yer: 'Damper hidroliği — pompa',   cam: V(-0.6, 1.3, 5.0), tgt: V(-0.1, 1.0, 0.86), ic: false },
+  transmisyon:    { ad: 'Transmisyon arızası',         yer: 'Güç aktarma — şanzıman',     cam: V(0.9, 0.8, 4.8),  tgt: V(0.75, 1.0, 0.0), ic: false },
+  motor_isi:      { ad: 'Motor aşırı ısınması',        yer: 'Motor bloğu',                cam: V(6.0, 4.4, -4.8), tgt: V(3.5, 1.95, -0.78), ic: true },
+  enjektor:       { ad: 'Enjektör / yanma arızası',    yer: 'Motor — enjektör hattı',     cam: V(4.9, 4.7, -3.6), tgt: V(3.6, 2.5, -0.72), ic: true },
+  motor_sargi:    { ad: 'Tahrik motoru sargı arızası', yer: 'Tahrik motoru / alternatör', cam: V(6.6, 3.0, -3.4), tgt: V(4.45, 1.7, -0.3), ic: true },
+  sogutma:        { ad: 'Soğutma sistemi arızası',     yer: 'Radyatör / fan',             cam: V(9.6, 2.4, -3.4), tgt: V(5.0, 2.0, -0.78), ic: false },
+};
+const HOME_TRUCK = { cam: V(7.4, 3.8, 13.2), tgt: V(0.2, 1.7, 0) };
 
 // ── Faz → bom / kepçe açısı (radyan): canlı fazı fiziksel harekete çevirir
 const POSE = {
@@ -41,7 +55,8 @@ const POSE = {
   approach_dump:   [0.50, 0.50], dumping:        [0.62, -0.62],
   returning_empty: [0.05, 0.18], kotu_yol:       [0.16, 0.55],
 };
-const LOADED = new Set(['picking_up', 'hauling_loaded', 'approach_dump', 'kotu_yol']);
+const LOADED = new Set(['picking_up', 'hauling_loaded', 'approach_dump', 'kotu_yol',
+  'getting_loaded', 'accelerating_loaded', 'climbing_loaded', 'arriving_dump']);
 
 let S = null;   // aktif sahne durumu
 
@@ -82,6 +97,17 @@ function noiseTexture(size, base, spread, seed = 1, repeat = 1) {
   return t;
 }
 
+// Stüdyo zemini: ortası hafif açık gri, kenarlara doğru siyaha erir (fon ile birleşir)
+function floorTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(256, 256, 0, 256, 256, 256);
+  gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.35, '#b0b0b0'); gr.addColorStop(0.75, '#202020'); gr.addColorStop(1, '#000000');
+  g.fillStyle = gr; g.fillRect(0, 0, 512, 512);
+  return new THREE.CanvasTexture(c);      // alfa maskesi: zemin kenarda tamamen saydam
+}
+
 function hazardTexture() {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 64;
@@ -118,9 +144,8 @@ function makeMaterials() {
     hose:     std({ color: 0x101010, metalness: 0.1, roughness: 0.7 }),
     grille:   std({ color: 0x0c0c0d, metalness: 0.5, roughness: 0.55 }),
     rock:     std({ map: noiseTexture(256, [96, 90, 84], 30, 7, 2), roughness: 0.96, metalness: 0.02 }),
-    ground:   std({ map: noiseTexture(512, [70, 65, 60], 22, 3, 8), roughness: 0.97, metalness: 0.0 }),
-    tunnel:   std({ map: noiseTexture(512, [74, 70, 66], 26, 11, 4), roughness: 0.98, metalness: 0.0,
-                    side: THREE.BackSide }),
+    floor:    std({ color: 0x2b2d31, alphaMap: floorTexture(), transparent: true, depthWrite: false,
+                    roughness: 0.78, metalness: 0.0 }),
   };
 }
 
@@ -269,8 +294,8 @@ function buildLoader(M) {
   const trans = mesh(rbox(1.0, 0.6, 0.8, 0.07), M.steel, root, V(-0.8, 0.9, 0));
   const tconv = mesh(cylX(0.32, 0.32, 0.35, 28), M.steel, root, V(-1.45, 0.95, 0));
   add('transmisyon', trans); add('transmisyon', tconv);
-  const pump = mesh(cylX(0.2, 0.2, 0.5, 24), M.engine, root, V(0.0, 0.95, 0.62));
-  const pumpBody = mesh(rbox(0.32, 0.3, 0.3, 0.04), M.engine, root, V(-0.32, 0.95, 0.62));
+  const pump = mesh(cylX(0.2, 0.2, 0.5, 24), M.engine, root, V(0.0, 0.95, 0.84));
+  const pumpBody = mesh(rbox(0.32, 0.3, 0.3, 0.04), M.engine, root, V(-0.32, 0.95, 0.84));
   add('hidrolik_pompa', pump); add('hidrolik_pompa', pumpBody);
   const hoses = [];
   for (const [i, pts] of [
@@ -385,8 +410,201 @@ function buildLoader(M) {
   const lifts = [cyl(0.13, 0.07), cyl(0.13, 0.07)];
   const tilt = cyl(0.15, 0.08);
 
-  return { root, parts, wheels, boom, bucket, load, lifts, tilt, hood, hoodMain };
+  const st = { boomA: 0, bucketA: 0.1, init: false };
+  function animate(dt, S) {
+    const [bt, kt] = POSE[S.phase] || POSE.idle;
+    const moving = !st.init || Math.abs(bt - st.boomA) > 1e-3 || Math.abs(kt - st.bucketA) > 1e-3 || load.visible !== S.loaded;
+    if (!moving) return false;
+    st.init = true;
+    st.boomA += (bt - st.boomA) * Math.min(1, dt * 1.4);
+    st.bucketA += (kt - st.bucketA) * Math.min(1, dt * 1.6);
+    boom.rotation.z = st.boomA;
+    bucket.rotation.z = st.bucketA - st.boomA;
+    load.visible = S.loaded;
+    root.updateMatrixWorld(true);
+    for (const [i, z] of [0.42, -0.42].entries()) {
+      const p1 = boom.localToWorld(_b.set(1.75, -0.28, z)).clone();
+      root.worldToLocal(p1);
+      placeCylinder(lifts[i], _a.set(1.55, 1.05, z).clone(), p1);
+    }
+    const p1 = bucket.localToWorld(_b.set(-0.32, 0.8, 0)).clone();
+    root.worldToLocal(p1);
+    placeCylinder(tilt, _a.set(1.05, 2.45, 0).clone(), p1);
+    return true;
+  }
+  return { root, parts, wheels, animate, offsetX: -0.2 };
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Kamyon modeli (TH551i benzeri, mafsallı, arkadan devirmeli damper)
+// ─────────────────────────────────────────────────────────────────
+function buildTruck(M) {
+  const root = new THREE.Group();
+  const parts = {};
+  const add = (k, m) => { (parts[k] = parts[k] || []).push(m); return m; };
+  const AX_F = 3.3, AX_R = -2.3, WS = 1.08, WY = 0.98 * WS, WZ = 1.25;
+  const q = new THREE.Object3D();
+
+  // ── Tekerlekler (ön çamurluklu; arka tekerlekler damperin altında)
+  const wheels = [];
+  for (const [x, z] of [[AX_F, WZ], [AX_F, -WZ], [AX_R, WZ], [AX_R, -WZ]]) {
+    const w = buildWheel(M, Math.sign(z));
+    w.scale.setScalar(WS);
+    w.position.set(x, WY, z);
+    root.add(w); wheels.push(w);
+    add(x > 0 ? 'rulman' : 'fren', w.getObjectByName('hub'));
+    if (x > 0) mesh(arcPlate(1.16, 1.24, 0.2, Math.PI - 0.2, 0.92), M.paint, root, V(x, WY, z));
+  }
+  for (const x of [AX_F, AX_R]) {
+    const k = x > 0 ? 'rulman' : 'fren';
+    add(k, mesh(cylZ(0.21, 0.21, 2.1, 24), M.frame, root, V(x, WY, 0)));
+    add(k, mesh(new THREE.SphereGeometry(0.38, 24, 16), M.frame, root, V(x, WY, 0)));
+    for (const z of [0.82, -0.82]) add(k, mesh(cylZ(0.36, 0.32, 0.2, 28), M.steel, root, V(x, WY, z)));
+  }
+
+  // ── Ön şasi, tampon, farlar
+  mesh(rbox(3.6, 0.7, 1.3, 0.08), M.paint, root, V(3.5, 1.3, 0));
+  mesh(rbox(0.55, 0.8, 3.0, 0.1), M.paint, root, V(5.35, 1.0, 0));
+  mesh(new THREE.BoxGeometry(0.02, 0.16, 2.6), M.hazard, root, V(5.63, 0.8, 0));
+  for (const z of [1.15, -1.15]) {
+    mesh(rbox(0.12, 0.22, 0.3, 0.03), M.frame, root, V(5.62, 1.22, z));
+    mesh(new THREE.CircleGeometry(0.08, 20).rotateY(Math.PI / 2), M.lamp, root, V(5.69, 1.22, z));
+  }
+
+  // ── Motor bölmesi (sol, −z) — kaput saydamlaşabilir
+  const hood = new THREE.Group(); root.add(hood);
+  mesh(rbox(2.6, 1.15, 1.35, 0.14), M.hood, hood, V(3.65, 2.05, -0.78));
+  const vent = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, 0.03, 0.9), M.grille, 12);
+  for (let i = 0; i < 12; i++) { q.position.set(2.85 + i * 0.12, 2.635, -0.78); q.updateMatrix(); vent.setMatrixAt(i, q.matrix); }
+  hood.add(vent);
+  mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.7, 16), M.frame, hood, V(2.65, 2.9, -1.25));   // egzoz
+  const radFrame = mesh(rbox(0.12, 0.95, 1.2, 0.04), M.paint, root, V(5.0, 2.0, -0.78));
+  const grill = new THREE.InstancedMesh(new THREE.BoxGeometry(0.04, 0.035, 1.02), M.grille, 11);
+  for (let i = 0; i < 11; i++) { q.position.set(5.07, 1.62 + i * 0.075, -0.78); q.updateMatrix(); grill.setMatrixAt(i, q.matrix); }
+  root.add(grill);
+  const radCore = mesh(new THREE.BoxGeometry(0.05, 0.8, 1.05), M.grille, root, V(5.04, 2.0, -0.78));
+  add('sogutma', radCore); add('sogutma', grill); add('sogutma', radFrame);
+  const engine = new THREE.Group(); root.add(engine);
+  add('motor_isi', mesh(rbox(1.6, 0.7, 0.85, 0.06), M.engine, engine, V(3.5, 1.95, -0.78)));
+  add('motor_isi', mesh(rbox(1.4, 0.16, 0.6, 0.04), M.steel, engine, V(3.5, 2.36, -0.78)));
+  for (let i = 0; i < 6; i++)
+    add('enjektor', mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.16, 12), M.chrome, engine, V(2.95 + i * 0.25, 2.5, -0.66)));
+  add('enjektor', mesh(cylX(0.03, 0.03, 1.45, 8), M.steel, engine, V(3.6, 2.55, -0.56)));
+  add('motor_sargi', mesh(cylX(0.2, 0.2, 0.42, 24), M.steel, engine, V(4.45, 1.7, -0.3)));
+  add('motor_sargi', mesh(new THREE.TorusGeometry(0.2, 0.025, 8, 24).rotateY(Math.PI / 2), M.chrome, engine, V(4.68, 1.7, -0.3)));
+
+  // ── Kabin (sağ, +z): beyaz, alt eteği turuncu
+  const cab = new THREE.Group(); cab.position.set(4.05, 0, 0.8); root.add(cab);
+  mesh(rbox(1.75, 0.42, 1.3, 0.06), M.paint, cab, V(0, 1.42, 0));
+  mesh(rbox(1.7, 1.5, 1.25, 0.1), M.cab, cab, V(0, 2.35, 0));
+  mesh(rbox(1.82, 0.12, 1.37, 0.05), M.cab, cab, V(0, 3.15, 0));
+  mesh(rbox(0.04, 0.8, 1.0, 0.02), M.glass, cab, V(0.86, 2.55, 0));
+  mesh(rbox(0.04, 0.8, 1.0, 0.02), M.glass, cab, V(-0.86, 2.55, 0));
+  mesh(rbox(1.3, 0.8, 0.04, 0.02), M.glass, cab, V(0.05, 2.55, 0.63));
+  mesh(rbox(1.35, 0.1, 0.05, 0.02), M.frame, cab, V(0.0, 2.08, 0.635));
+  for (const z of [-0.4, 0.4]) {
+    mesh(rbox(0.16, 0.14, 0.24, 0.03), M.frame, cab, V(0.84, 3.28, z));
+    mesh(new THREE.CircleGeometry(0.06, 16).rotateY(Math.PI / 2), M.lamp, cab, V(0.925, 3.28, z));
+  }
+  mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.12, 16), M.beacon, cab, V(-0.6, 3.27, 0.3));
+  const lad = new THREE.Group(); lad.position.set(0.55, 0, 0.7); cab.add(lad);
+  for (const dx of [-0.2, 0.2]) mesh(cylX(0.022, 0.022, 0.95, 8).rotateZ(Math.PI / 2), M.yellow, lad, V(dx, 0.95, 0));
+  for (const y of [0.6, 0.9, 1.2]) mesh(new THREE.BoxGeometry(0.42, 0.04, 0.14), M.yellow, lad, V(0, y, 0));
+
+  // ── Mafsal
+  mesh(rbox(0.7, 0.85, 1.0, 0.06), M.frame, root, V(1.7, 1.2, 0));
+  for (const y of [0.7, 1.7]) mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.25, 20), M.chrome, root, V(1.7, y, 0));
+  for (const z of [0.5, -0.5]) {
+    const c = mesh(cylX(0.06, 0.06, 1.1, 14), M.chrome, root, V(1.75, 1.05, z));
+    c.rotation.y = z > 0 ? 0.25 : -0.25;
+  }
+
+  // ── Arka şasi, şanzıman, şaft, damper pompası
+  for (const z of [0.55, -0.55]) mesh(rbox(5.9, 0.55, 0.2, 0.04), M.paint, root, V(-1.55, 1.15, z));
+  mesh(rbox(0.45, 0.65, 2.5, 0.06), M.paint, root, V(-4.55, 1.15, 0));
+  mesh(new THREE.BoxGeometry(0.02, 0.15, 2.0), M.hazard, root, V(-4.785, 1.0, 0));
+  for (const z of [1.1, -1.1]) {
+    mesh(rbox(0.06, 0.14, 0.24, 0.02), M.lampRed, root, V(-4.8, 1.3, z));
+    mesh(new THREE.CircleGeometry(0.05, 16).rotateY(-Math.PI / 2), M.lamp, root, V(-4.81, 1.05, z));
+  }
+  add('transmisyon', mesh(rbox(0.9, 0.55, 0.75, 0.07), M.steel, root, V(0.75, 1.0, 0)));
+  add('transmisyon', mesh(cylX(0.3, 0.3, 0.3, 28), M.steel, root, V(1.3, 1.0, 0)));
+  add('transmisyon', mesh(cylX(0.07, 0.07, 2.4, 16), M.steel, root, V(-0.95, 0.98, 0)));
+  add('hidrolik_pompa', mesh(cylX(0.2, 0.2, 0.5, 24), M.engine, root, V(0.0, 1.0, 0.86)));
+  add('hidrolik_pompa', mesh(rbox(0.32, 0.3, 0.3, 0.04), M.engine, root, V(-0.33, 1.0, 0.86)));
+  for (const [i, pts] of [
+    [V(0.15, 1.1, 0.86), V(0.45, 1.35, 0.9), V(0.6, 1.3, 0.85)],
+    [V(-0.35, 1.15, 0.86), V(-0.2, 1.5, 0.3), V(0.3, 1.35, -0.6), V(0.6, 1.3, -0.8)],
+    [V(0.05, 0.85, 0.9), V(0.9, 0.95, 0.8), V(1.6, 1.15, 0.5)],
+  ].entries())
+    add('hidrolik_pompa', mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 32, i === 1 ? 0.045 : 0.035, 10), M.hose, root));
+
+  // ── Damper kasası (arka menteşeden döner)
+  const box = new THREE.Group(); box.position.set(-4.3, 1.95, 0); root.add(box);
+  const BL = 6.1, top = (x) => 1.05 + (x - 0.4) * 0.11;
+  mesh(rbox(BL, 0.14, 3.1, 0.04), M.paint, box, V(BL / 2, 0.07, 0));
+  const side = [[0, 0], [BL, 0], [BL, 1.6], [5.6, top(5.6)], [0.4, top(0.4)], [0, 0.9]].map(([x, y]) => new THREE.Vector2(x, y));
+  for (const z of [1.55, -1.55]) {
+    mesh(plateFromOutline(side, 0.1), M.paint, box, V(0, 0, z));
+    const rail = mesh(rbox(5.35, 0.16, 0.2, 0.05), M.paint, box, V(3.0, (top(0.4) + top(5.6)) / 2, z * 1.03));
+    rail.rotation.z = Math.atan(0.11);
+    for (const x of [1.2, 2.3, 3.4, 4.5]) {
+      const h = top(x) - 0.1;
+      mesh(rbox(0.12, h, 0.08, 0.03), M.paint, box, V(x, h / 2 + 0.02, z * 1.05));
+    }
+    mesh(new THREE.BoxGeometry(0.9, 0.14, 0.02), M.hazard, box, V(0.9, top(0.9) - 0.18, z * 1.075));
+  }
+  mesh(rbox(0.14, 1.75, 3.3, 0.04), M.paint, box, V(BL - 0.05, 0.87, 0));
+  const lip = mesh(rbox(1.0, 0.1, 3.3, 0.04), M.paint, box, V(BL + 0.35, 1.9, 0));
+  lip.rotation.z = 0.42;
+  mesh(new THREE.BoxGeometry(0.02, 0.17, 3.0), M.hazard, box, V(BL + 0.02, 1.45, 0));
+  const tail = mesh(rbox(0.55, 0.12, 3.1, 0.04), M.paint, box, V(0.1, 0.16, 0));
+  tail.rotation.z = -0.35;
+  for (const z of [0.8, -0.8]) mesh(rbox(5.8, 0.18, 0.18, 0.04), M.frame, box, V(3.0, -0.09, z));
+  for (const z of [0.8, -0.8]) mesh(cylZ(0.12, 0.12, 0.3, 20), M.chrome, root, V(-4.3, 1.85, z));
+  const pile = new THREE.SphereGeometry(1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+  const pp = pile.attributes.position;
+  for (let i = 0; i < pp.count; i++) {
+    const k = 1 + 0.12 * Math.sin(pp.getX(i) * 11.3) * Math.cos(pp.getZ(i) * 8.7);
+    pp.setXYZ(i, pp.getX(i) * k, pp.getY(i) * k, pp.getZ(i) * k);
+  }
+  pile.computeVertexNormals();
+  const load = mesh(pile, M.rock, box, V(3.3, 0.1, 0)); load.scale.set(2.7, 0.95, 1.4);
+
+  // Devirme silindirleri (şasiden kasa altına)
+  const cyl = () => {
+    const g = new THREE.Group(); root.add(g);
+    return { barrel: mesh(new THREE.CylinderGeometry(0.15, 0.15, 1, 20), M.paint, g),
+             rod: mesh(new THREE.CylinderGeometry(0.085, 0.085, 1, 16), M.chrome, g) };
+  };
+  const hoists = [cyl(), cyl()];
+
+  const st = { a: 0, init: false };
+  function animate(dt, S) {
+    const want = S.phase === 'dumping' ? 0.85 : 0;
+    const moving = !st.init || Math.abs(want - st.a) > 1e-3 || load.visible !== S.loaded;
+    if (!moving) return false;
+    st.init = true;
+    st.a += (want - st.a) * Math.min(1, dt * 1.2);
+    box.rotation.z = st.a;
+    load.visible = S.loaded && st.a < 0.3;
+    root.updateMatrixWorld(true);
+    for (const [i, z] of [0.85, -0.85].entries()) {
+      const p1 = box.localToWorld(_b.set(3.7, -0.15, z)).clone();
+      root.worldToLocal(p1);
+      placeCylinder(hoists[i], _a.set(0.55, 1.25, z).clone(), p1);
+    }
+    return true;
+  }
+  return { root, parts, wheels, animate, offsetX: -0.4 };
+}
+
+const VEHICLES = {
+  loader: { build: buildLoader, comp: COMP_LOADER, home: HOME_LOADER,
+            tags: { motor: V(-3.9, 2.6, 0), hyd: V(2.8, 2.6, 0), sasi: V(2.5, 2.25, 1.2) } },
+  truck:  { build: buildTruck, comp: COMP_TRUCK, home: HOME_TRUCK,
+            tags: { motor: V(3.6, 2.9, -0.78), hyd: V(0.2, 1.6, 1.0), sasi: V(3.3, 2.45, 1.3) } },
+};
 
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _d = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 function placeCylinder(c, p0, p1) {
@@ -444,68 +662,42 @@ export function mount(el, tip = 'loader') {
   wrap.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0a0c0f);
-  scene.fog = new THREE.Fog(0x0a0c0f, 22, 48);
+  scene.background = new THREE.Color(0x060708);
+  const cfg = VEHICLES[tip] || VEHICLES.loader;
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   scene.environment = envTex;
   scene.environmentIntensity = 0.55;
 
   const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 120);
-  camera.position.copy(HOME.cam);
+  camera.position.copy(cfg.home.cam);
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.copy(HOME.tgt);
+  controls.target.copy(cfg.home.tgt);
   controls.enableDamping = true; controls.dampingFactor = 0.08;
-  controls.minDistance = 3.2; controls.maxDistance = 22;
+  controls.minDistance = 3.2; controls.maxDistance = 24;
   controls.maxPolarAngle = Math.PI * 0.495; controls.enablePan = true;
   controls.update();
 
   const M = makeMaterials();
-  // Işık: ana (gölgeli), dolgu, gök/yer, galeri lambaları
-  scene.add(new THREE.HemisphereLight(0x9fb0c2, 0x2a241e, 0.55));
-  const key = new THREE.DirectionalLight(0xfff2e2, 2.4);
+  // Işık: stüdyo düzeni — gölgeli ana ışık, dolgu, arka kontur, üstten yumuşak spot
+  scene.add(new THREE.HemisphereLight(0xc8d2dc, 0x1a1a1c, 0.45));
+  const key = new THREE.DirectionalLight(0xfff4e8, 2.6);
   key.position.set(7, 13, 9); key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
-  Object.assign(key.shadow.camera, { left: -9, right: 9, top: 7, bottom: -5, near: 1, far: 40 });
-  key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02; key.shadow.radius = 4;
+  Object.assign(key.shadow.camera, { left: -9, right: 9, top: 8, bottom: -6, near: 1, far: 40 });
+  key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02; key.shadow.radius = 5;
   scene.add(key);
-  const fill = new THREE.DirectionalLight(0xb9cfff, 0.55); fill.position.set(-8, 5, -6); scene.add(fill);
-  const rim = new THREE.DirectionalLight(0xffffff, 0.5); rim.position.set(-6, 4, 9); scene.add(rim);
-  for (const x of [-12, 0, 12]) {
-    const p = new THREE.PointLight(0xffd9a0, 18, 14, 2); p.position.set(x, 4.6, -1.5); scene.add(p);
-  }
-  const head = new THREE.SpotLight(0xfff4e0, 60, 20, 0.5, 0.6, 1.6);
-  head.position.set(3.8, 2.2, 0); head.target.position.set(10, 0, 0); scene.add(head, head.target);
+  const fill = new THREE.DirectionalLight(0xc4d6ff, 0.6); fill.position.set(-8, 5, -7); scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xffffff, 0.9); rim.position.set(-9, 6, 6); scene.add(rim);
+  const top = new THREE.SpotLight(0xffffff, 140, 30, 0.7, 1.0, 1.6);
+  top.position.set(0, 13, 2); top.target.position.set(0, 0, 0); scene.add(top, top.target);
 
-  // Zemin + galeri (kesit görünümü: yakın duvar kameradan saklanır)
-  const ground = mesh(new THREE.PlaneGeometry(80, 80).rotateX(-Math.PI / 2), M.ground, scene);
-  ground.castShadow = false;
-  const tg = new THREE.CylinderGeometry(4.2, 4.2, 70, 64, 30, true, 0, Math.PI).rotateZ(Math.PI / 2).rotateX(-Math.PI / 2);
-  const tp = tg.attributes.position;
-  for (let i = 0; i < tp.count; i++) {
-    const x = tp.getX(i), y = tp.getY(i), z = tp.getZ(i);
-    const n = 0.18 * Math.sin(x * 1.3 + z * 2.1) + 0.12 * Math.sin(x * 3.7 - y * 2.9) + 0.07 * Math.sin(z * 6.1 + x * 5.3);
-    const r = Math.hypot(y, z) || 1;
-    tp.setXYZ(i, x, y + y / r * n, z + z / r * n);
-  }
-  tg.computeVertexNormals();
-  const tunnel = mesh(tg, M.tunnel, scene, V(0, 0.6, 0)); tunnel.castShadow = false;
-  // yerde kaya parçaları
-  const rk = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.18, 0), M.rock, 60);
-  const q = new THREE.Object3D();
-  let s = 42; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
-  for (let i = 0; i < 60; i++) {
-    q.position.set(-20 + rnd() * 40, 0.05, (rnd() < 0.5 ? -1 : 1) * (2.2 + rnd() * 1.6));
-    q.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3); const k = 0.4 + rnd() * 1.6; q.scale.set(k, k * 0.6, k);
-    q.updateMatrix(); rk.setMatrixAt(i, q.matrix);
-  }
-  rk.receiveShadow = true; scene.add(rk);
-  // ileride malzeme yığını
-  const heap = mesh(new THREE.SphereGeometry(2.4, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), M.rock, scene, V(11.5, 0, 0));
-  heap.scale.set(1.2, 0.75, 1.1);
+  // Düz stüdyo zemini (kenarlarda siyah fona erir)
+  const floor = mesh(new THREE.CircleGeometry(16, 96).rotateX(-Math.PI / 2), M.floor, scene);
+  floor.castShadow = false;
 
-  const model = buildLoader(M);
-  model.root.position.x = -0.2;
+  const model = cfg.build(M);
+  model.root.position.x = model.offsetX;
   scene.add(model.root);
 
   // Etiketler
@@ -514,7 +706,7 @@ export function mount(el, tip = 'loader') {
     hyd:   makeTag(wrap, 'Hidrolik basınç'),
     sasi:  makeTag(wrap, 'Şasi · titreşim · hız'),
   };
-  const tagAnchors = { motor: V(-3.9, 2.6, 0), hyd: V(2.8, 2.6, 0), sasi: V(2.5, 2.25, 1.2) };
+  const tagAnchors = cfg.tags;
   const focusEl = document.createElement('div'); focusEl.className = 't3-focus';
   focusEl.innerHTML = '<div class="t3-dot"></div><div class="t3-line"></div><div class="t3-card"><div class="t"></div><div class="s"></div><div class="r"></div></div>';
   wrap.appendChild(focusEl);
@@ -526,14 +718,14 @@ export function mount(el, tip = 'loader') {
   const mode = document.createElement('div'); mode.className = 't3-mode'; mode.textContent = '3B dijital ikiz'; wrap.appendChild(mode);
 
   S = {
-    el, wrap, renderer, scene, camera, controls, M, model, tags, tagAnchors, focusEl, glow, envTex, pmrem,
-    speed: 0, phase: 'idle', boomA: 0, bucketA: 0.1, wheelA: 0, loaded: false,
+    el, wrap, renderer, scene, camera, controls, M, model, cfg, tags, tagAnchors, focusEl, glow, envTex, pmrem,
+    speed: 0, phase: 'idle', loaded: false,
     focus: null, tween: null, userMoved: false, dirty: true, clock: new THREE.Clock(), raf: 0, visible: true,
   };
   ctl.addEventListener('click', (e) => {
     const a = e.target.dataset.a;
-    if (a === 'home') { S.userMoved = true; flyTo(HOME.cam, HOME.tgt, 1.3); }
-    if (a === 'focus' && S.focus) { S.userMoved = false; flyTo(COMP[S.focus.key].cam, COMP[S.focus.key].tgt, 1.6); }
+    if (a === 'home') { S.userMoved = true; flyTo(S.cfg.home.cam, S.cfg.home.tgt, 1.3); }
+    if (a === 'focus' && S.focus) { const c = S.cfg.comp[S.focus.key]; S.userMoved = false; flyTo(c.cam, c.tgt, 1.6); }
   });
   controls.addEventListener('start', () => { S.userMoved = true; S.tween = null; });
   controls.addEventListener('change', () => { S.dirty = true; });
@@ -588,37 +780,14 @@ function loop() {
   if (document.hidden || !S.visible) return;
   const t = S.clock.elapsedTime;
   const md = S.model;
-  const [bt0, kt0] = POSE[S.phase] || POSE.idle;
-  const moving = S.speed > 0.05 || Math.abs(bt0 - S.boomA) > 1e-3 || Math.abs(kt0 - S.bucketA) > 1e-3
-    || md.load.visible !== S.loaded || Math.abs((S.focus && COMP[S.focus.key].ic ? 0.16 : 1) - S.M.hood.opacity) > 1e-3;
+  const comp = S.focus ? S.cfg.comp[S.focus.key] : null;
+  const want = comp && comp.ic ? 0.16 : 1;
+  const hm = S.M.hood;
+  // Araç stantta: tekerlek dönmez; yalnız faz duruşu (bom/kepçe ya da damper) değişince hareket var
+  const moving = md.animate(dt, S) || Math.abs(want - hm.opacity) > 1e-3;
   // Sahne durgunsa hiç çizme (GPU boşta kalır); yalnız hareket/odak/kamera değişince çiz
   if (!moving && !S.tween && !S.focus && !S.dirty) return;
   S.dirty = false;
-
-  // tekerlek dönüşü (hız km/h → rad/s, r = 0.98 m)
-  S.wheelA -= (S.speed / 3.6) / 0.98 * dt;
-  for (const w of md.wheels) w.rotation.z = S.wheelA;
-  // bom/kepçe fazı takip eder (yumuşak)
-  const [bt, kt] = POSE[S.phase] || POSE.idle;
-  S.boomA += (bt - S.boomA) * Math.min(1, dt * 1.4);
-  S.bucketA += (kt - S.bucketA) * Math.min(1, dt * 1.6);
-  md.boom.rotation.z = S.boomA;
-  md.bucket.rotation.z = S.bucketA - S.boomA;
-  md.load.visible = S.loaded;
-  // silindirler
-  md.root.updateMatrixWorld(true);
-  for (const [i, z] of [0.42, -0.42].entries()) {
-    const p0 = _a.set(1.55, 1.05, z).clone();
-    const p1 = md.boom.localToWorld(_b.set(1.75, -0.28, z)).clone();
-    md.root.worldToLocal(p1);
-    placeCylinder(md.lifts[i], p0, p1);
-  }
-  {
-    const p0 = _a.set(1.05, 2.45, 0).clone();
-    const p1 = md.bucket.localToWorld(_b.set(-0.32, 0.8, 0)).clone();
-    md.root.worldToLocal(p1);
-    placeCylinder(md.tilt, p0, p1);
-  }
 
   // kamera geçişi
   if (S.tween) {
@@ -631,8 +800,6 @@ function loop() {
   S.controls.update();
 
   // odak: nabız gibi parlama + iç parçada kaput saydamlığı
-  const want = S.focus && COMP[S.focus.key].ic ? 0.16 : 1;
-  const hm = S.M.hood;
   hm.opacity += (want - hm.opacity) * Math.min(1, dt * 3);
   hm.depthWrite = hm.opacity > 0.95;
   if (S.focus) {
@@ -652,10 +819,11 @@ function loop() {
     el.style.opacity = (ok && !S.focus && dist > 9) ? 1 : 0;
   }
   if (S.focus) {
-    const [x, y, ok] = proj(COMP[S.focus.key].tgt);
+    const [x, y, ok] = proj(comp.tgt);
     S.focusEl.style.transform = `translate(${x}px,${y}px)`;
     S.focusEl.style.opacity = ok ? 1 : 0;
-    S.glow.position.copy(COMP[S.focus.key].tgt).add(off).add(V(0, 0.4, 0.6));
+    // parıltı ışığı bileşenin kameraya bakan tarafında
+    S.glow.position.copy(comp.tgt).addScaledVector(_d.subVectors(comp.cam, comp.tgt).normalize(), 0.7).add(off);
   } else S.focusEl.style.opacity = 0;
 
   S.renderer.render(S.scene, S.camera);
@@ -675,12 +843,13 @@ export function update(d) {
 
 /** bilgi: {renk:'kirmizi'|'sari', baslik, alt, rul} */
 export function focus(key, bilgi = {}) {
-  if (!S || !COMP[key]) return;
+  const C = S && S.cfg.comp[key];
+  if (!C) return;
   const color = bilgi.renk === 'sari' ? '#ffb020' : '#ff3b30';
   const card = S.focusEl.querySelector('.t3-card');
   S.focusEl.style.setProperty('--t3c', color);
-  card.querySelector('.t').textContent = bilgi.baslik || COMP[key].ad;
-  card.querySelector('.s').textContent = bilgi.alt || COMP[key].yer;
+  card.querySelector('.t').textContent = bilgi.baslik || C.ad;
+  card.querySelector('.s').textContent = bilgi.alt || C.yer;
   card.querySelector('.r').textContent = bilgi.rul || '';
   const changed = !S.focus || S.focus.key !== key || S.focus.color !== color;
   S.focus = { key, color };
@@ -688,7 +857,7 @@ export function focus(key, bilgi = {}) {
     setHighlight(key, color);
     S.glow.color.set(color);
     S.userMoved = false;
-    flyTo(COMP[key].cam, COMP[key].tgt, 1.8);
+    flyTo(C.cam, C.tgt, 1.8);
   }
 }
 
@@ -697,7 +866,7 @@ export function clearFocus() {
   S.focus = null;
   setHighlight(null);
   S.dirty = true;
-  if (!S.userMoved) flyTo(HOME.cam, HOME.tgt, 1.6);
+  if (!S.userMoved) flyTo(S.cfg.home.cam, S.cfg.home.tgt, 1.6);
 }
 
 export function unmount() {
@@ -708,7 +877,7 @@ export function unmount() {
   S.scene.traverse((o) => {
     if (o.geometry) o.geometry.dispose();
     const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
-    for (const m of mats) { if (m.map) m.map.dispose(); m.dispose(); }
+    for (const m of mats) { if (m.map) m.map.dispose(); if (m.alphaMap) m.alphaMap.dispose(); m.dispose(); }
   });
   S.envTex.dispose(); S.pmrem.dispose();
   S.renderer.dispose();
@@ -717,7 +886,6 @@ export function unmount() {
   S = null;
 }
 
-export const COMPONENTS = COMP;
-window.Twin3D = { supported, mount, update, focus, clearFocus, unmount, COMPONENTS: COMP,
+window.Twin3D = { supported, mount, update, focus, clearFocus, unmount,
   _durum: () => S && { cam: S.camera.position.toArray().map((v) => +v.toFixed(2)), tween: !!S.tween, focus: S.focus } };
 window.dispatchEvent(new Event('twin3d-ready'));

@@ -855,18 +855,18 @@ function twinReset(){ twinScale=1; twinX=0; twinY=0; twinApply(); }
   },{passive:false});
 })();
 
-/* ── 3B ikiz (yükleyici): WebGL yoksa ya da kamyonsa 2B şema kullanılır ── */
+/* ── 3B ikiz (yükleyici + kamyon): WebGL yoksa 2B şema yedek olarak kullanılır ── */
 let _t3on = false, _t3rul = null;
 function twinSetup(){
   _t3rul = null;
   const kamyon = state.vehicle.id.startsWith('TH');
   const T = window.Twin3D;
-  if(!kamyon && !T){ window.addEventListener('twin3d-ready', twinSetup, {once:true}); }
-  _t3on = !kamyon && !!T && T.supported();
+  if(!T){ window.addEventListener('twin3d-ready', twinSetup, {once:true}); }
+  _t3on = !!T && T.supported();
   document.getElementById('twin3d').style.display = _t3on ? '' : 'none';
   document.getElementById('twin2d').style.display = _t3on ? 'none' : '';
   document.getElementById('twin-title').textContent = _t3on ? '3B Dijital İkiz' : '2B Dijital İkiz';
-  if(_t3on){ T.mount(document.getElementById('twin3d'), 'loader'); }
+  if(_t3on){ T.mount(document.getElementById('twin3d'), kamyon ? 'truck' : 'loader'); }
   else { if(T) T.unmount(); twinBuild(); }
 }
 /* Sensör artığı → şüpheli bileşen (RUL tahmini gelene kadar kaba konum) */
