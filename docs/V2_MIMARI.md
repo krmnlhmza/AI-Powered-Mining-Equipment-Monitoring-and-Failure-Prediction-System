@@ -101,7 +101,22 @@ Bileşen teşhisi: RUL < 72 sa pencerelerde %77,5. 30 sn ileri tahminde LSTM,
 cd digital-twin
 .venv/bin/python ml/train.py      # ~6 dk (CPU)
 .venv/bin/python ml/evaluate.py   # ~2 dk
+.venv/bin/python -m pytest        # ~15 sn — altyapı (DB/Redis/MQTT) gerekmez
 ```
+
+Test kümesi (`tests/`): simülatörün fiziksel tutarlılığı, sağlıklı makinede
+yanlış alarm olmaması, başlatılan arızanın yakalanması, 3 ardışık teyit ve
+olay başına tek alarm kuralı, veri hattının yan etkileri (DB, Redis, SSE,
+n8n, Qdrant, e-posta — sahte servislerle) ve API doğrulamaları.
+
+## 5.1 Veri hattı ve canlı akış
+
+MQTT abonesi ve HTTP uçları (`POST /sensors/reading`, `/sensors/simulate`)
+tek bir fonksiyonu çağırır: `app/services/pipeline.py → process_reading`.
+Böylece iki giriş yolu arasında davranış farkı oluşamaz. Her okuma
+`GET /dashboard/stream` (Server-Sent Events) üzerinden `reading`, her yeni
+anomali olayı `alarm` olarak panele anında iletilir. Panel akış koparsa
+`/sensors/latest` polling'ine kendiliğinden döner.
 
 ## 6. Sonraki adımlar
 

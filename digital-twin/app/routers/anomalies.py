@@ -6,6 +6,7 @@ geçmiş anomali hafızasında benzer kayıt arama endpoint'leri.
 
   GET  /anomalies/                  → son N saatteki anomaliler
   POST /anomalies/{id}/resolve      → bir anomaliyi "çözüldü" işaretle
+  POST /anomalies/resolve-all       → açık alarmların tümünü (ops. tek ekipman) kapat
   GET  /anomalies/similar?description=... → Qdrant'tan benzer geçmiş arızalar
 """
 
@@ -44,6 +45,17 @@ async def resolve_anomaly(anomaly_id: int, db: AsyncSession = Depends(get_db)):
     )
     await db.commit()
     return {"status": "çözüldü", "id": anomaly_id}
+
+
+@router.post("/resolve-all")
+async def resolve_all(equipment_id: str = None, db: AsyncSession = Depends(get_db)):
+    """Açık alarmların tümünü (isteğe bağlı tek ekipman için) çözüldü işaretle."""
+    q = update(AnomalyLog).where(AnomalyLog.resolved.is_(False))
+    if equipment_id:
+        q = q.where(AnomalyLog.equipment_id == equipment_id)
+    result = await db.execute(q.values(resolved=True))
+    await db.commit()
+    return {"status": "çözüldü", "adet": result.rowcount}
 
 
 @router.get("/similar")
