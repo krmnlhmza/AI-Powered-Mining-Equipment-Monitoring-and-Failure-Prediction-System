@@ -490,7 +490,8 @@ function selectVehicle(id){
   window._testActive=false; window._testSeen=false;
   /* Canlı Test sırası GLOBAL: araç değişince sıfırlanmaz, kaldığı yerden devam eder */
   buildLiveGrid(); buildSahaGrid(); twinSetup(); simChartsReset(); simMqttBadge();
-  refreshLive();
+  sseBaslat();
+  refreshLive(true);
   timers.push(setInterval(refreshLive, 2500));
   timers.push(setInterval(simChartsUpdate, 3000));
   timers.push(setInterval(simMqttBadge, 15000));
@@ -511,11 +512,38 @@ function buildSahaGrid(){
     </div>`).join('');
 }
 
-async function refreshLive(){
+/* ── Canlı akış (SSE: /dashboard/stream) ──
+   Sunucu her okumayı `reading`, her yeni anomali olayını `alarm` olarak iter.
+   Akış canlıyken polling beklemede kalır; bağlantı koparsa (proxy, ağ)
+   refreshLive kendiliğinden Redis'ten okumaya döner. */
+let _sse=null, _sseSon=0;
+function sseBaslat(){
+  if(_sse || !window.EventSource) return;
+  _sse = new EventSource(`${API}/dashboard/stream`);
+  _sse.addEventListener('reading', e=>{
+    _sseSon = Date.now();
+    if(!state.vehicle || !document.getElementById('view-vehicle').classList.contains('active')) return;
+    const d = JSON.parse(e.data);
+    if(d.equipment_id === state.vehicle.id) applyLive(d);
+  });
+  _sse.addEventListener('alarm', ()=>{
+    pollAlarmCount();
+    if(document.getElementById('drawer-alarms').classList.contains('show')) loadAlarms();
+  });
+}
+
+async function refreshLive(zorla){
+  if(!zorla && Date.now()-_sseSon < 7000) return;   // SSE canlı → yedek beklemede
   try{
     const r = await fetch(`${API}/sensors/latest/${state.vehicle.id}`);
     const d = await r.json();
     if(!d.temperature) return;
+    applyLive(d);
+  }catch(e){}
+}
+
+function applyLive(d){
+  try{
     SENSORS.forEach(s=>{
       const el=document.getElementById(`lv-${s.key}`);
       if(el && d[s.key]!==null && d[s.key]!==undefined)

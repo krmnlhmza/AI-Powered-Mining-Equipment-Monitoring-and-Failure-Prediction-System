@@ -1,8 +1,15 @@
 """
 Demo dashboard için veri endpoint'leri.
+
+  GET /dashboard/stream  → canlı akış (Server-Sent Events): `reading` ve
+                           `alarm` olayları; panel bağlıyken polling'e gerek kalmaz
 """
 
-from fastapi import APIRouter, Depends
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, text
 from datetime import datetime, timedelta, timezone
@@ -148,3 +155,28 @@ async def recent_anomalies(limit: int = 8, db: AsyncSession = Depends(get_db)):
         }
         for l in logs
     ]
+
+
+@router.get("/stream")
+async def stream(request: Request):
+    """Canlı akış (SSE). Veri hattı (app.services.pipeline) her okumayı
+    `reading`, her yeni anomali olayını `alarm` olarak yayınlar."""
+    from app.services import events
+    queue = events.subscribe()
+
+    async def generate():
+        try:
+            yield "retry: 3000\n\n"
+            while not await request.is_disconnected():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                data = json.dumps(event["data"], ensure_ascii=False, default=str)
+                yield f"event: {event['type']}\ndata: {data}\n\n"
+        finally:
+            events.unsubscribe(queue)
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

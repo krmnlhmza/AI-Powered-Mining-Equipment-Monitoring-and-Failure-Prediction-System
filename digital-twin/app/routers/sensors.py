@@ -14,108 +14,37 @@ Saha kanalları MQTT üzerinden besleniyor; bu endpoint'ler ise test ve
 manuel demo içindir.
 """
 
-from fastapi import APIRouter, Depends, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from typing import List
 from datetime import datetime, timedelta, timezone
 import json
-import asyncio
 
 from app.database import get_db
-from app.models.sensor import SensorReading, AnomalyLog
+from app.models.sensor import SensorReading
 from app.schemas.sensor import SensorReadingCreate, SensorReadingOut
-from app.services.anomaly_detector import detect as detect_anomaly
+from app.services.pipeline import process_reading
 from app.redis_client import redis_client
 from data.simulator import generate_reading
 
 router = APIRouter(prefix="/sensors", tags=["Sensörler"])
 
 
-def _save_to_qdrant(description: str, metadata: dict):
-    try:
-        from app.services.embedding_service import store_anomaly
-        store_anomaly(description, metadata)
-    except Exception:
-        pass
-
-
-def _notify_n8n(payload: dict):
-    try:
-        from app.services.n8n_notifier import notify
-        notify(payload)
-    except Exception:
-        pass
+def _bilinen_ekipman(equipment_id: str):
+    """Bilinmeyen ekipman 404 döner. (Aksi hâlde dedektör ilk profile düşer ve
+    o makinenin akış durumunu — EWMA, devreye alma ortalaması — bozardı.)"""
+    from data.simulator import EQUIPMENT_PROFILES
+    if equipment_id not in EQUIPMENT_PROFILES:
+        raise HTTPException(status_code=404, detail=f"Bilinmeyen ekipman: {equipment_id}")
 
 
 @router.post("/reading", response_model=SensorReadingOut)
-async def add_reading(
-    data: SensorReadingCreate,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-):
-    from data.simulator import gas_status
-    from app.services.anomaly_detector import yeni_olay_mu
-
-    result   = detect_anomaly(data.model_dump())
-    gas_eval = gas_status(float(data.gas or 0.0))
-    # Tek olay = tek alarm: episod boyunca yalnız ilk anomali okumasında tetikle
-    yeni_olay = yeni_olay_mu(data.equipment_id, result["is_anomaly"])
-
-    record = SensorReading(
-        **data.model_dump(exclude={"op_hours"}),
-        is_anomaly=result["is_anomaly"],
-        anomaly_score=result["anomaly_score"],
-    )
-    db.add(record)
-
-    if yeni_olay:
-        # Otomatik arıza tahmini (MQTT yoluyla AYNI zincir — tek yardımcı)
-        from app.services.mqtt_subscriber import otomatik_tahmin
-        tahmin_metni, rul_tahmin = await otomatik_tahmin(
-            db, data.equipment_id,
-            [data.temperature, data.vibration, data.pressure, data.current, data.speed])
-        result["description"] = (result["description"] or "") + tahmin_metni
-
-        log = AnomalyLog(
-            equipment_id=data.equipment_id,
-            equipment_type=data.equipment_type,
-            anomaly_score=result["anomaly_score"],
-            description=result["description"],
-        )
-        db.add(log)
-
-        metadata = {
-            "equipment_id":   data.equipment_id,
-            "equipment_type": data.equipment_type,
-            "anomaly_score":  result["anomaly_score"],
-            "temperature":    data.temperature,
-            "vibration":      data.vibration,
-            "time":           datetime.now(timezone.utc).isoformat(),
-        }
-        background_tasks.add_task(_save_to_qdrant, result["description"], metadata)
-        background_tasks.add_task(_notify_n8n, {**metadata,
-            "description": result["description"],
-            "rul_saat": rul_tahmin.get("rul_saat"),
-            "supheli_bilesen": rul_tahmin.get("baskin_sensor")})
-        if result["anomaly_score"] >= 0.7:
-            from app.services.mailer import kritik_anomali_bildir
-            background_tasks.add_task(kritik_anomali_bildir,
-                data.equipment_id, result["anomaly_score"], result["description"],
-                rul_tahmin.get("baskin_sensor"), rul_tahmin.get("rul_saat"))
-
-    # Metan/İSG alarmı kaldırıldı — kapsam kararı.
-
-    await db.commit()
-    await db.refresh(record)
-
-    await redis_client.setex(
-        f"latest:{data.equipment_id}",
-        60,
-        json.dumps({**data.model_dump(), **result, "gas_status": gas_eval}),
-    )
-
-    return record
+async def add_reading(data: SensorReadingCreate, db: AsyncSession = Depends(get_db)):
+    """Harici sistemden okuma. MQTT yoluyla AYNI veri hattı işler
+    (app.services.pipeline): tespit → kayıt → Redis/SSE → alarm/bildirim."""
+    _bilinen_ekipman(data.equipment_id)
+    return await process_reading(data.model_dump(), db)
 
 
 @router.get("/latest/{equipment_id}")
@@ -187,19 +116,17 @@ async def set_mode(equipment_id: str, faz: str = Query(...)):
 @router.post("/simulate/{equipment_id}", response_model=SensorReadingOut)
 async def simulate_reading(
     equipment_id: str,
-    background_tasks: BackgroundTasks,   # DİKKAT: varsayılan DEĞER VERME!
-    # FastAPI, BackgroundTasks'i yalnız varsayılansız parametrede enjekte eder;
-    # `= BackgroundTasks()` yazılırsa görevler kuyruğa alınır ama ASLA çalışmaz
-    # (e-posta/n8n bildirimlerinin sessizce kaybolduğu hatanın kök nedeni buydu).
     force_anomaly: bool = False,
     force_gas: bool = False,
     ariza_tipi: str = None,   # (Senaryo 2) hedefli arıza: vibration_spike | overheat
     db: AsyncSession = Depends(get_db),
 ):
+    _bilinen_ekipman(equipment_id)
     reading = generate_reading(equipment_id, force_anomaly=force_anomaly,
                                force_gas=force_gas, fault_type=ariza_tipi)
-    schema  = SensorReadingCreate(**reading)
-    return await add_reading(schema, background_tasks, db)
+    SensorReadingCreate(**reading)   # şema doğrulaması
+    # Ham okuma (phase, wear_level dahil) iletilir: 3D ikiz faz bilgisini kullanır
+    return await process_reading(reading, db)
 
 
 @router.post("/maintenance/{equipment_id}")
